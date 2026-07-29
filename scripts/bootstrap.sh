@@ -55,7 +55,7 @@ git -C "$SOURCE" archive --format=tar "$COMMIT" | tar -xf - -C "$BUILD_ROOT/sour
 BUILD_SOURCE="$BUILD_ROOT/source"
 
 printf 'Checking SMP repository commit %s\n' "$COMMIT"
-"$BUILD_SOURCE/scripts/test-repository.sh"
+bash "$BUILD_SOURCE/scripts/test-repository.sh"
 printf 'Building SMP commit %s\n' "$COMMIT"
 (
     cd "$BUILD_SOURCE"
