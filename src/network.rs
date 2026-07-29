@@ -118,7 +118,7 @@ pub fn plan(machine: &str, definition: &NetworkDefinition) -> Result<NetworkPlan
             "dev".into(),
             definition.tap.clone(),
             "alias".into(),
-            format!("{comment}:forward-out"),
+            comment.clone(),
         ],
         vec![
             "ip".into(),
@@ -277,8 +277,11 @@ pub fn apply(machine: &str, definition: &NetworkDefinition) -> Result<()> {
     let plan = plan(machine, definition)?;
     ensure_table()?;
     let alias = format!("smp:{machine}");
+    let legacy_alias = format!("{alias}:forward-out");
     if let Some(existing_alias) = link_alias(&definition.tap)? {
-        if existing_alias != alias {
+        if existing_alias == legacy_alias {
+            run(&plan.apply_commands[1])?;
+        } else if existing_alias != alias {
             return Err(SmpError::Ambiguous(format!(
                 "TAP {} exists with alias {}",
                 definition.tap, existing_alias
@@ -321,7 +324,8 @@ pub fn cleanup(machine: &str, definition: &NetworkDefinition) -> Result<()> {
     }
     if let Some(alias) = link_alias(&definition.tap)? {
         let expected = format!("smp:{machine}");
-        if alias != expected {
+        let legacy = format!("{expected}:forward-out");
+        if alias != expected && alias != legacy {
             return Err(SmpError::Ambiguous(format!(
                 "refusing to delete TAP {} with alias {}",
                 definition.tap, alias
@@ -564,6 +568,18 @@ mod tests {
         assert!(rendered.contains("127.0.0.0/8"));
         assert!(rendered.contains("dnat ip to"));
         assert!(rendered.contains("smp:default"));
+        assert_eq!(
+            plan.apply_commands[1],
+            vec![
+                "ip",
+                "link",
+                "set",
+                "dev",
+                definition.tap.as_str(),
+                "alias",
+                "smp:default",
+            ]
+        );
         let comments = plan
             .apply_commands
             .iter()
