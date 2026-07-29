@@ -41,10 +41,12 @@ ensure_rule filter FORWARD -o "$TAP" -m conntrack --ctstate ESTABLISHED,RELATED 
 ensure_rule nat POSTROUTING -s "$SUBNET" -o "$OUTBOUND" -j MASQUERADE
 
 # Locally generated traffic does not traverse PREROUTING. Mirror every SMP
-# published TCP/UDP port into nat OUTPUT so localhost publication is real.
+# published TCP/UDP port into nat OUTPUT, then SNAT loopback-originated traffic
+# to the TAP gateway so the guest can return it without loopback martian drops.
 while IFS=$'\t' read -r protocol host_port guest_port; do
     [[ -n $protocol ]] || continue
     ensure_rule nat OUTPUT -p "$protocol" -d 127.0.0.1 --dport "$host_port" -j DNAT --to-destination "$GUEST:$guest_port"
+    ensure_rule nat POSTROUTING -p "$protocol" -s 127.0.0.1 -d "$GUEST" --dport "$guest_port" -j SNAT --to-source "$GATEWAY"
 done < <(jq -r '.network.publishedPorts[]? | [.protocol, (.hostPort|tostring), (.guestPort|tostring)] | @tsv' <<<"$STATUS")
 
 printf 'Host forwarding repaired for %s via %s -> %s\n' "$MACHINE" "$TAP" "$OUTBOUND"
