@@ -29,7 +29,9 @@ done
 HOSTNAME_VALUE="$(tr -d '\r\n' < "$MOUNT/hostname")"
 [[ "$HOSTNAME_VALUE" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || fail 'invalid hostname'
 printf '%s\n' "$HOSTNAME_VALUE" > /etc/hostname
-printf '%s\n' "$HOSTNAME_VALUE" > /proc/sys/kernel/hostname
+if [[ -w /proc/sys/kernel/hostname ]]; then
+    printf '%s\n' "$HOSTNAME_VALUE" > /proc/sys/kernel/hostname || true
+fi
 
 if [[ ! -s /etc/machine-id ]]; then
     systemd-machine-id-setup
@@ -56,7 +58,6 @@ Gateway=$GATEWAY
 DNS=${DNS//,/ }
 IPv6AcceptRA=no
 NETWORK
-systemctl enable systemd-networkd systemd-resolved ssh
 ln -sfn /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 
 if [[ -f "$MOUNT/files.tar" ]]; then
