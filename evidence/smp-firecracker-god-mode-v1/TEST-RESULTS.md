@@ -73,8 +73,10 @@ The exact cause was a path-dependent module-tree digest algorithm. The kernel-ca
 
 ## Module identity correction
 
-- Correction commit: `43811279ac21f22aad3219610dcad2679f0be92a`
+- Tested correction commit: `43811279ac21f22aad3219610dcad2679f0be92a`
+- Published GitHub-App equivalent: `00c032d0bd38384426035dbffccbbb86eeb5579e`
 - Correction tree: `490cd4526f42981e5e86b7eacbadbb36c5e22c6f`
+- Equivalence: both correction commits resolve to the exact same tested code tree; only commit metadata differs.
 - Digest algorithm: `sha256-relative-regular-files-v1`
 - Asset behavior: verify both exact legacy identities, compute a relocation-invariant identity from relative paths and contents, migrate only manifest/provenance metadata, and do not rebuild Firecracker, Linux, its modules, or Debian.
 - Core behavior: SMP now verifies the normalized module tree directly when loading the asset manifest.
