@@ -48,6 +48,12 @@ source "$MOUNT/network.env"
 [[ "$GATEWAY" =~ ^[0-9.]+$ ]] || fail 'invalid GATEWAY'
 [[ "$DNS" =~ ^[0-9.,]+$ ]] || fail 'invalid DNS'
 [[ "$MAC" =~ ^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$ ]] || fail 'invalid MAC'
+IFS=',' read -r -a DNS_SERVERS <<<"$DNS"
+(( ${#DNS_SERVERS[@]} > 0 )) || fail 'empty DNS list'
+for server in "${DNS_SERVERS[@]}"; do
+    [[ "$server" =~ ^[0-9.]+$ ]] || fail "invalid DNS server $server"
+done
+
 cat > /etc/systemd/network/10-smp.network <<NETWORK
 [Match]
 MACAddress=$MAC
@@ -58,7 +64,6 @@ Gateway=$GATEWAY
 DNS=${DNS//,/ }
 IPv6AcceptRA=no
 NETWORK
-ln -sfn /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 
 INTERFACE=
 for candidate in /sys/class/net/*; do
@@ -72,6 +77,15 @@ done
 ip link set dev "$INTERFACE" up
 ip address replace "$ADDRESS" dev "$INTERFACE"
 ip route replace default via "$GATEWAY" dev "$INTERFACE"
+
+rm -f /etc/resolv.conf
+{
+    for server in "${DNS_SERVERS[@]}"; do
+        printf 'nameserver %s\n' "$server"
+    done
+    printf 'options timeout:2 attempts:3\n'
+} > /etc/resolv.conf
+chmod 0644 /etc/resolv.conf
 
 if [[ -f "$MOUNT/files.tar" ]]; then
     tar --extract --file "$MOUNT/files.tar" --directory / --no-same-owner --numeric-owner
