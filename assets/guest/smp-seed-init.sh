@@ -11,7 +11,8 @@ if [[ -f "$STATE/complete" ]]; then
 fi
 
 fail() {
-    printf 'failed: %s\n' "$*" > "$STATUS"
+    local message=$*
+    printf 'failed: %s\n' "$message" | tee "$STATUS" >&2
     exit 1
 }
 trap 'fail "line $LINENO"' ERR
@@ -28,7 +29,7 @@ done
 HOSTNAME_VALUE="$(tr -d '\r\n' < "$MOUNT/hostname")"
 [[ "$HOSTNAME_VALUE" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || fail 'invalid hostname'
 printf '%s\n' "$HOSTNAME_VALUE" > /etc/hostname
-hostnamectl set-hostname "$HOSTNAME_VALUE"
+printf '%s\n' "$HOSTNAME_VALUE" > /proc/sys/kernel/hostname
 
 if [[ ! -s /etc/machine-id ]]; then
     systemd-machine-id-setup
