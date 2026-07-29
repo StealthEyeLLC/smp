@@ -178,11 +178,26 @@ if [[ ! -s /etc/smp/credentials/tunnel-token && $SKIP_TUNNEL_PROMPT -eq 0 && -t 
 fi
 
 systemctl daemon-reload
-systemctl enable --now smp.service
+systemctl enable smp.service >/dev/null
+systemctl restart smp.service
 curl --fail --silent --show-error http://127.0.0.1:7745/healthz >/dev/null
 curl --fail --silent --show-error http://127.0.0.1:7745/readyz >/dev/null
+SERVICE_REQUEST_ID="bootstrap-${COMMIT:0:20}"
+SERVICE_RESPONSE="$(
+    jq -nc --arg requestId "$SERVICE_REQUEST_ID" \
+      '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"go",arguments:{schemaVersion:1,requestId:$requestId,operation:"describe",argv:[],detach:false,options:{}}}}' |
+    curl --fail --silent --show-error \
+      -H 'Content-Type: application/json' \
+      --data-binary @- \
+      http://127.0.0.1:7745/mcp
+)"
+jq -e --arg commit "$COMMIT" '.result.structuredContent.data.buildCommit == $commit' <<<"$SERVICE_RESPONSE" >/dev/null || {
+    printf 'live SMP service does not report expected build commit %s\n' "$COMMIT" >&2
+    exit 65
+}
 if [[ -s /etc/smp/credentials/tunnel-token ]]; then
-    systemctl enable --now smp-tunnel.service
+    systemctl enable smp-tunnel.service >/dev/null
+    systemctl restart smp-tunnel.service
 else
     systemctl disable smp-tunnel.service >/dev/null 2>&1 || true
 fi
