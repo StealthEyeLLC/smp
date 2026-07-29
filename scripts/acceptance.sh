@@ -65,6 +65,11 @@ else
     smp wait "$PRIMARY" --timeout-seconds 180
 fi
 
+if [[ -x /usr/lib/smp/repair-host-network.sh ]]; then
+    stage 'Host forwarding reconciliation'
+    /usr/lib/smp/repair-host-network.sh "$PRIMARY"
+fi
+
 stage 'Guest identity, routing, DNS, and HTTPS'
 [[ "$(smp exec "$PRIMARY" -- id -u)" == 0 ]]
 smp exec "$PRIMARY" -- systemctl is-system-running --wait
@@ -86,7 +91,7 @@ smp exec "$PRIMARY" -- bash -lc 'test "$(stat -fc %T /sys/fs/cgroup)" = cgroup2f
 smp exec "$PRIMARY" -- bash -lc 'nft add table inet smp_test; nft list table inet smp_test >/dev/null; nft delete table inet smp_test'
 smp exec "$PRIMARY" -- bash -lc 'ip tuntap add dev smptun0 mode tap; ip link set smptun0 up; ip link delete smptun0'
 smp exec "$PRIMARY" -- bash -lc 'ip link add smpveth0 type veth peer name smpveth1; ip link add smpbr0 type bridge; ip link set smpveth0 master smpbr0; ip link delete smpveth0; ip link delete smpbr0'
-smp exec "$PRIMARY" -- bash -lc 'modprobe dummy; lsmod | grep -q "^dummy "; modprobe -r dummy'
+smp exec "$PRIMARY" -- bash -lc 'ip link add smpdummy0 type dummy; ip link set smpdummy0 up; ip link delete smpdummy0'
 smp exec "$PRIMARY" -- bash -lc 'cat >/etc/systemd/system/smp-accept.service <<EOF
 [Service]
 Type=oneshot
