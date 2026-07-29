@@ -19,6 +19,7 @@ DISPOSABLE=smp-cert-disposable
 FAILURE=smp-cert-no-fallback
 HOST_PORT=18080
 RESULT_ROOT=/var/lib/smp/results/acceptance
+PUBLISH_UNIT=
 mkdir -p "$RESULT_ROOT"
 if [[ $RESUME_PRIMARY -eq 1 ]]; then
     exec > >(tee -a "$RESULT_ROOT/stdout.log") 2> >(tee -a "$RESULT_ROOT/stderr.log" >&2)
@@ -29,16 +30,60 @@ fi
 stage() {
     printf '\n=== %s ===\n' "$1"
 }
+
 cleanup_machine() {
     local name=$1
     smp destroy "$name" --force >/dev/null 2>&1 || true
 }
+
+cleanup_publish() {
+    if [[ -n $PUBLISH_UNIT ]]; then
+        smp exec "$PRIMARY" -- systemctl stop "${PUBLISH_UNIT}.service" >/dev/null 2>&1 || true
+        PUBLISH_UNIT=
+    fi
+}
+
 cleanup() {
+    cleanup_publish
     cleanup_machine "$DISPOSABLE"
     cleanup_machine "$FAILURE"
     cleanup_machine "$SECONDARY"
 }
 trap cleanup EXIT
+
+probe_host_http() {
+    local label=$1
+    local url=$2
+    local body=
+    local attempt
+    for attempt in $(seq 1 20); do
+        body="$(curl --fail --silent --show-error --max-time 2 "$url" 2>/dev/null || true)"
+        if [[ $body == published-ok ]]; then
+            printf '%s verified: published-ok\n' "$label"
+            return 0
+        fi
+        sleep 0.25
+    done
+    printf '%s failed for %s; last body=%q\n' "$label" "$url" "$body" >&2
+    return 1
+}
+
+publish_diagnostics() {
+    local guest_ip=$1
+    printf '\n--- Published-port diagnostics ---\n' >&2
+    if [[ -n $PUBLISH_UNIT ]]; then
+        smp exec "$PRIMARY" -- systemctl status "${PUBLISH_UNIT}.service" --no-pager -l >&2 || true
+        smp exec "$PRIMARY" -- journalctl -u "${PUBLISH_UNIT}.service" --no-pager -n 50 >&2 || true
+    fi
+    smp exec "$PRIMARY" -- ss -ltnp >&2 || true
+    ip route get "$guest_ip" >&2 || true
+    iptables -S INPUT >&2 || true
+    iptables -S OUTPUT >&2 || true
+    iptables -S FORWARD >&2 || true
+    iptables -t nat -S OUTPUT >&2 || true
+    iptables -t nat -S POSTROUTING >&2 || true
+    printf '%s\n' '--- End published-port diagnostics ---' >&2
+}
 
 stage 'Host and asset verification'
 smp doctor --fix
@@ -92,30 +137,55 @@ smp exec "$PRIMARY" -- bash -lc 'nft add table inet smp_test; nft list table ine
 smp exec "$PRIMARY" -- bash -lc 'ip tuntap add dev smptun0 mode tap; ip link set smptun0 up; ip link delete smptun0'
 smp exec "$PRIMARY" -- bash -lc 'ip link add smpveth0 type veth peer name smpveth1; ip link add smpbr0 type bridge; ip link set smpveth0 master smpbr0; ip link delete smpveth0; ip link delete smpbr0'
 smp exec "$PRIMARY" -- bash -lc 'ip link add smpdummy0 type dummy; ip link set smpdummy0 up; ip link delete smpdummy0'
-smp exec "$PRIMARY" -- bash -lc 'cat >/etc/systemd/system/smp-accept.service <<EOF
+smp exec "$PRIMARY" -- bash -lc 'cat >/etc/systemd/system/smp-accept.service <<EOF_SERVICE
 [Service]
 Type=oneshot
 ExecStart=/bin/true
 RemainAfterExit=yes
-EOF
+EOF_SERVICE
 systemctl daemon-reload; systemctl start smp-accept.service; systemctl is-active --quiet smp-accept.service; systemctl disable --now smp-accept.service >/dev/null 2>&1 || true; rm -f /etc/systemd/system/smp-accept.service; systemctl daemon-reload'
 smp exec "$PRIMARY" -- bash -lc 'groupadd -f smpaccept; id -u smpaccept >/dev/null 2>&1 || useradd -g smpaccept smpaccept; id smpaccept'
-smp exec "$PRIMARY" -- bash -lc 'cat >/root/native.c <<EOF
+smp exec "$PRIMARY" -- bash -lc 'cat >/root/native.c <<EOF_C
 #include <stdio.h>
 int main(void){puts("native-ok");return 0;}
-EOF
+EOF_C
 gcc -O2 -o /root/native /root/native.c; test "$(/root/native)" = native-ok'
 
 stage 'Published port and exact argv behavior'
-smp exec "$PRIMARY" -- bash -lc 'pkill -x nc >/dev/null 2>&1 || true; nohup sh -c "while true; do printf \"HTTP/1.1 200 OK\\r\\nContent-Length: 12\\r\\nConnection: close\\r\\n\\r\\npublished-ok\" | nc -l -p 8080 -q 1; done" >/root/listener.log 2>&1 </dev/null &'
-for _ in $(seq 1 30); do
-    if [[ "$(curl --silent --max-time 1 "http://127.0.0.1:${HOST_PORT}" || true)" == published-ok ]]; then break; fi
-    sleep 1
+PUBLISH_UNIT="smp-publish-acceptance-$$"
+HTTP_LOOP='while true; do printf "HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\npublished-ok" | nc -l -p 8080 -q 1; done'
+smp exec "$PRIMARY" -- systemd-run --quiet --collect --unit "$PUBLISH_UNIT" --property Restart=always /bin/sh -c "$HTTP_LOOP"
+smp exec "$PRIMARY" -- systemctl is-active --quiet "${PUBLISH_UNIT}.service"
+
+GUEST_HTTP=
+for _ in $(seq 1 20); do
+    GUEST_HTTP="$(smp exec "$PRIMARY" -- curl --fail --silent --show-error --max-time 2 http://127.0.0.1:8080/ 2>/dev/null || true)"
+    [[ $GUEST_HTTP == published-ok ]] && break
+    sleep 0.25
 done
-[[ "$(curl --silent --max-time 2 "http://127.0.0.1:${HOST_PORT}")" == published-ok ]]
+if [[ $GUEST_HTTP != published-ok ]]; then
+    printf 'guest listener verification failed; last body=%q\n' "$GUEST_HTTP" >&2
+    publish_diagnostics "$(smp status "$PRIMARY" --json | jq -r .network.guestAddress)"
+    exit 1
+fi
+printf 'Guest listener verified: published-ok\n'
+
+GUEST_IP="$(smp status "$PRIMARY" --json | jq -er .network.guestAddress)"
+if ! probe_host_http 'Host direct guest-port path' "http://${GUEST_IP}:8080/"; then
+    publish_diagnostics "$GUEST_IP"
+    exit 1
+fi
+if ! probe_host_http 'Published localhost port' "http://127.0.0.1:${HOST_PORT}/"; then
+    publish_diagnostics "$GUEST_IP"
+    exit 1
+fi
 
 EXACT_ARG='$(touch /root/argv-was-shell); spaced ; *'
-smp exec "$PRIMARY" -- /usr/bin/printf '%s' "$EXACT_ARG" | grep -Fqx "$EXACT_ARG"
+EXACT_OBSERVED="$(smp exec "$PRIMARY" -- /usr/bin/printf '%s' "$EXACT_ARG")"
+[[ $EXACT_OBSERVED == "$EXACT_ARG" ]] || {
+    printf 'exact argv mismatch: expected=%q observed=%q\n' "$EXACT_ARG" "$EXACT_OBSERVED" >&2
+    exit 1
+}
 if smp exec "$PRIMARY" -- test -e /root/argv-was-shell; then
     printf 'exact argv was interpreted by a shell\n' >&2
     exit 1
@@ -124,7 +194,12 @@ set +e
 smp exec "$PRIMARY" -- sh -c 'exit 37'
 NONZERO=$?
 set -e
-[[ $NONZERO -eq 37 ]]
+[[ $NONZERO -eq 37 ]] || {
+    printf 'remote exit-code propagation mismatch: expected=37 observed=%s\n' "$NONZERO" >&2
+    exit 1
+}
+printf 'Exact argv and remote exit-code propagation verified\n'
+cleanup_publish
 
 stage 'File transfer and persistence'
 printf 'file-transfer-ok\n' > "$RESULT_ROOT/upload.txt"
@@ -137,11 +212,17 @@ smp exec "$PRIMARY" -- sh -c 'printf persistent-ok >/root/persistent-value'
 smp stop "$PRIMARY"
 smp start "$PRIMARY"
 smp wait "$PRIMARY" --timeout-seconds 180
+if [[ -x /usr/lib/smp/repair-host-network.sh ]]; then
+    /usr/lib/smp/repair-host-network.sh "$PRIMARY"
+fi
 smp exec "$PRIMARY" -- grep -Fx persistent-ok /root/persistent-value
 OLD_PROCESS="$(smp inspect "$PRIMARY" --json | jq -c .process)"
 REBOOT_JSON="$(smp reboot "$PRIMARY" --json)"
 NEW_PROCESS="$(jq -c .newProcess <<<"$REBOOT_JSON")"
 [[ "$OLD_PROCESS" != "$NEW_PROCESS" ]]
+if [[ -x /usr/lib/smp/repair-host-network.sh ]]; then
+    /usr/lib/smp/repair-host-network.sh "$PRIMARY"
+fi
 
 stage 'MMIO isolation and disposable lifecycle'
 smp create "$SECONDARY" --mode persistent --transport mmio --memory-mib 1024
