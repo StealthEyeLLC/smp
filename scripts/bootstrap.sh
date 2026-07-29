@@ -6,6 +6,7 @@ SOURCE=
 COMMIT=
 SKIP_PACKAGES=0
 SKIP_TUNNEL_PROMPT=0
+CONTROL_PLANE_ONLY=0
 RUSTUP_VERSION=1.29.0
 RUST_TOOLCHAIN=1.97.1
 RUST_HOST=x86_64-unknown-linux-gnu
@@ -14,6 +15,7 @@ RUSTUP_INIT_SHA_URL="${RUSTUP_INIT_URL}.sha256"
 CLOUDFLARED_VERSION=2026.5.2
 CLOUDFLARED_SHA256=5286698547f03df745adb2355f04c12dde52ef425491e81f433642d695521886
 CLOUDFLARED_URL="https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64"
+MIN_ASSET_BUILD_FREE_BYTES=$((10 * 1024 * 1024 * 1024))
 
 while (($#)); do
     case "$1" in
@@ -21,6 +23,7 @@ while (($#)); do
         --commit) COMMIT=$2; shift 2 ;;
         --skip-packages) SKIP_PACKAGES=1; shift ;;
         --skip-tunnel-prompt) SKIP_TUNNEL_PROMPT=1; shift ;;
+        --control-plane-only) CONTROL_PLANE_ONLY=1; shift ;;
         *) printf 'unknown argument: %s\n' "$1" >&2; exit 64 ;;
     esac
 done
@@ -44,7 +47,7 @@ if [[ $SKIP_PACKAGES -eq 0 ]]; then
       xz-utils zstd bison flex libelf-dev bc dwarves rsync file kmod procps shellcheck
 fi
 
-for tool in curl git install systemctl sha256sum jq tar awk; do
+for tool in curl git install systemctl sha256sum jq tar awk df; do
     command -v "$tool" >/dev/null || { printf 'missing bootstrap tool: %s\n' "$tool" >&2; exit 69; }
 done
 
@@ -133,13 +136,15 @@ install -m 0644 "$BUILD_SOURCE/plugin/smp.go.schema.json" /etc/smp/smp.go.schema
 install -m 0600 "$BUILD_SOURCE/Cargo.lock" /var/lib/smp/provenance/Cargo.lock.new
 mv -f /var/lib/smp/provenance/Cargo.lock.new /var/lib/smp/provenance/Cargo.lock
 
-TMP_CLOUDFLARED="$(mktemp)"
-curl --fail --location --proto '=https' --tlsv1.2 --retry 4 --output "$TMP_CLOUDFLARED" "$CLOUDFLARED_URL"
-printf '%s  %s\n' "$CLOUDFLARED_SHA256" "$TMP_CLOUDFLARED" | sha256sum --check --strict -
-install -m 0755 "$TMP_CLOUDFLARED" /usr/local/bin/cloudflared.new
-mv -f /usr/local/bin/cloudflared.new /usr/local/bin/cloudflared
-rm -f "$TMP_CLOUDFLARED"
-TMP_CLOUDFLARED=
+if [[ ! -x /usr/local/bin/cloudflared ]] || ! printf '%s  %s\n' "$CLOUDFLARED_SHA256" /usr/local/bin/cloudflared | sha256sum --check --strict - >/dev/null 2>&1; then
+    TMP_CLOUDFLARED="$(mktemp)"
+    curl --fail --location --proto '=https' --tlsv1.2 --retry 4 --output "$TMP_CLOUDFLARED" "$CLOUDFLARED_URL"
+    printf '%s  %s\n' "$CLOUDFLARED_SHA256" "$TMP_CLOUDFLARED" | sha256sum --check --strict -
+    install -m 0755 "$TMP_CLOUDFLARED" /usr/local/bin/cloudflared.new
+    mv -f /usr/local/bin/cloudflared.new /usr/local/bin/cloudflared
+    rm -f "$TMP_CLOUDFLARED"
+    TMP_CLOUDFLARED=
+fi
 
 INSTALLED_VERSION="$(/usr/local/bin/smp --json version | jq -r .version)"
 cat > /etc/smp/install.json.new <<INSTALL
@@ -183,7 +188,39 @@ else
 fi
 
 /usr/local/bin/smp --json describe >/dev/null
-printf 'SMP bootstrap complete\n'
+
+if [[ $CONTROL_PLANE_ONLY -eq 0 ]]; then
+    [[ -c /dev/kvm ]] || { printf 'SMP real Firecracker certification requires /dev/kvm\n' >&2; exit 69; }
+    if [[ ! -r /var/lib/smp/assets/manifest.json ]]; then
+        AVAILABLE_BYTES="$(df -PB1 /var/lib/smp | awk 'NR == 2 {print $4}')"
+        [[ $AVAILABLE_BYTES =~ ^[0-9]+$ ]] || { printf 'could not determine free disk space\n' >&2; exit 69; }
+        printf 'Asset-build free space: %s bytes\n' "$AVAILABLE_BYTES"
+        if (( AVAILABLE_BYTES < MIN_ASSET_BUILD_FREE_BYTES )); then
+            printf 'SMP asset build requires at least %s free bytes; found %s\n' "$MIN_ASSET_BUILD_FREE_BYTES" "$AVAILABLE_BYTES" >&2
+            exit 70
+        fi
+    fi
+
+    printf 'Building and verifying canonical Firecracker, Linux, and Debian assets\n'
+    /usr/local/bin/smp --json assets | tee /var/lib/smp/provenance/assets.json >/dev/null
+    jq -e '.schemaVersion == 1 and .architecture == "x86_64" and .firecracker.version == "1.15.1" and .kernel.version == "6.1.177" and .debianVersion == "13.6"' /var/lib/smp/assets/manifest.json >/dev/null
+    for path in \
+      "$(jq -r .firecracker.path /var/lib/smp/assets/manifest.json)" \
+      "$(jq -r .kernel.path /var/lib/smp/assets/manifest.json)" \
+      "$(jq -r .rootfs.path /var/lib/smp/assets/manifest.json)"; do
+        [[ -f $path ]] || { printf 'certified asset missing: %s\n' "$path" >&2; exit 65; }
+    done
+
+    printf 'Running complete real Firecracker acceptance\n'
+    /usr/lib/smp/acceptance.sh
+    jq -e '.result == "PASS"' /var/lib/smp/results/acceptance/result.json >/dev/null
+    systemctl is-active --quiet smp.service
+    curl --fail --silent --show-error http://127.0.0.1:7745/healthz >/dev/null
+    curl --fail --silent --show-error http://127.0.0.1:7745/readyz >/dev/null
+    /usr/lib/smp/prompt2-handoff.sh | tee /var/lib/smp/provenance/prompt2-handoff.json
+fi
+
+printf 'SMP full bootstrap complete\n'
 printf 'commit=%s\n' "$COMMIT"
 printf 'rustup_version=%s\n' "$RUSTUP_VERSION"
 printf 'rust_toolchain=%s\n' "$RUST_TOOLCHAIN"
@@ -191,4 +228,10 @@ printf 'cargo_lock_sha256=%s\n' "$LOCK_SHA"
 printf 'binary_sha256=%s\n' "$CANDIDATE_SHA"
 printf 'smp_service=%s\n' "$(systemctl is-active smp.service)"
 printf 'tunnel_service=%s\n' "$(systemctl is-active smp-tunnel.service 2>/dev/null || true)"
-printf 'prompt2_handoff=/usr/lib/smp/prompt2-handoff.sh\n'
+if [[ $CONTROL_PLANE_ONLY -eq 0 ]]; then
+    printf 'acceptance_result=%s\n' "$(jq -r .result /var/lib/smp/results/acceptance/result.json)"
+    printf 'acceptance_evidence=/var/lib/smp/results/acceptance/result.json\n'
+    printf 'prompt2_handoff=/var/lib/smp/provenance/prompt2-handoff.json\n'
+else
+    printf 'prompt2_handoff=/usr/lib/smp/prompt2-handoff.sh\n'
+fi
