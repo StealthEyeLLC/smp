@@ -40,6 +40,10 @@ smp wait "$PRIMARY" --timeout-seconds 180
 
 [[ "$(smp exec "$PRIMARY" -- id -u)" == 0 ]]
 smp exec "$PRIMARY" -- systemctl is-system-running --wait
+smp exec "$PRIMARY" -- ip route get 1.1.1.1
+smp exec "$PRIMARY" -- grep -Eq '^nameserver [0-9]+(\.[0-9]+){3}$' /etc/resolv.conf
+smp exec "$PRIMARY" -- getent ahostsv4 debian.org
+smp exec "$PRIMARY" -- curl --fail --silent --show-error https://deb.debian.org/ >/dev/null
 smp exec "$PRIMARY" -- bash -lc 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends hello'
 smp exec "$PRIMARY" -- hello
 smp exec "$PRIMARY" -- bash -lc 'set -e; truncate -s 64M /root/fs.img; mkfs.ext4 -F /root/fs.img >/dev/null; L=$(losetup --find --show /root/fs.img); mkdir -p /mnt/fs; mount "$L" /mnt/fs; touch /mnt/fs/ok; umount /mnt/fs; losetup -d "$L"'
@@ -64,8 +68,6 @@ smp exec "$PRIMARY" -- bash -lc 'cat >/root/native.c <<EOF
 int main(void){puts("native-ok");return 0;}
 EOF
 gcc -O2 -o /root/native /root/native.c; test "$(/root/native)" = native-ok'
-smp exec "$PRIMARY" -- getent ahostsv4 debian.org
-smp exec "$PRIMARY" -- curl --fail --silent --show-error https://deb.debian.org/ >/dev/null
 smp exec "$PRIMARY" -- bash -lc 'nohup sh -c "while true; do printf published-ok | nc -l -p 8080 -q 1; done" >/root/listener.log 2>&1 </dev/null &'
 for _ in $(seq 1 30); do
     if [[ "$(curl --silent --max-time 1 "http://127.0.0.1:${HOST_PORT}" || true)" == published-ok ]]; then break; fi
