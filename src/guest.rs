@@ -74,6 +74,8 @@ pub fn create_seed(paths: &RuntimePaths, record: &MachineRecord, output: &Path) 
         .arg(&record.network.gateway_address)
         .arg("--dns")
         .arg(dns)
+        .arg("--mac")
+        .arg(&record.network.guest_mac)
         .output()
         .with_context(|| format!("run {}", script.display()))?;
     if !command.status.success() {
@@ -251,8 +253,6 @@ fn ssh_output(record: &MachineRecord, argv: &[String]) -> Result<std::process::O
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn exact_argv_encoding_has_no_shell_metacharacters() {
         let encoded = hex::encode(b"$(touch /tmp/nope); space");
