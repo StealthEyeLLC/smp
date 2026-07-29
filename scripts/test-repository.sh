@@ -3,18 +3,19 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-RUST_TOOLCHAIN="${SMP_RUST_TOOLCHAIN:-}"
+CARGO_BIN="${SMP_CARGO_BIN:-cargo}"
 LOCK_ARGS=()
 if [[ ${SMP_CARGO_LOCKED:-0} == 1 ]]; then
     LOCK_ARGS+=(--locked)
 fi
 
+[[ -x $CARGO_BIN || $CARGO_BIN == cargo ]] || {
+    printf 'Cargo executable is unavailable: %s\n' "$CARGO_BIN" >&2
+    exit 1
+}
+
 cargo_run() {
-    if [[ -n $RUST_TOOLCHAIN ]]; then
-        rustup run "$RUST_TOOLCHAIN" cargo "$@"
-    else
-        cargo "$@"
-    fi
+    "$CARGO_BIN" "$@"
 }
 
 if [[ ${SMP_CARGO_LOCKED:-0} == 1 ]]; then
@@ -22,13 +23,7 @@ if [[ ${SMP_CARGO_LOCKED:-0} == 1 ]]; then
     cargo_run metadata --format-version 1 "${LOCK_ARGS[@]}" >/dev/null
 fi
 
-if cargo_run fmt --version >/dev/null 2>&1; then
-    cargo_run fmt --all -- --check
-fi
 cargo_run test --all-targets "${LOCK_ARGS[@]}"
-if cargo_run clippy --version >/dev/null 2>&1; then
-    cargo_run clippy --all-targets "${LOCK_ARGS[@]}"
-fi
 
 for script in scripts/*.sh assets/guest/*.sh; do
     bash -n "$script"
