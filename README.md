@@ -17,20 +17,22 @@ The first certified lane is intentionally exact:
 - official Firecracker `v1.15.1`, pinned by exact release asset and SHA-256 digest;
 - PCI VirtIO transport by default, with explicit MMIO override;
 - Firecracker's default host-side seccomp retained;
-- Debian stable userspace;
+- Debian `13.6` (`trixie`) userspace, pinned by repository and package provenance plus rootfs digest;
 - Firecracker-compatible uncompressed ELF Linux 6.1 kernel with matching modules;
 - writable persistent or disposable ext4 machine state;
 - direct key-based root SSH;
 - one local `smp` binary;
 - one optional ChatGPT callable tool: `smp.go`.
 
-SMP never resolves an unversioned latest VMM during ordinary machine creation and never falls back to a container, chroot, QEMU, host shell, reduced guest, or simulation when KVM is unavailable.
+PCI means Firecracker's VirtIO PCI transport. The initial contract does not claim VFIO, GPU or arbitrary host PCI passthrough, USB passthrough, cross-architecture emulation, or nested KVM.
+
+SMP never resolves an unversioned latest VMM or the moving Debian `stable` alias during ordinary machine creation. It never falls back to a container, chroot, QEMU, host shell, reduced guest, or simulation when KVM is unavailable.
 
 ## Current phase
 
 The current phase builds and proves power first.
 
-Safety systems, extensive receipts, approval workflows, policy engines, production jailer integration, multi-tenant controls, and governance layers are intentionally deferred. Minimum authentication, encrypted remote transport, exact process identity, retry identity, bounded output, and honest success or failure remain required because they are correctness, not safety theater.
+Safety systems, extensive receipts, approval workflows, policy engines, production jailer integration, multi-tenant controls, and governance layers are intentionally deferred. Minimum authentication, encrypted remote transport, exact process identity, retry identity, restart adoption, bounded output, and honest success or failure remain required because they are correctness, not safety theater.
 
 Any later safety implementation must govern the completed power surface without silently redefining a restricted subset as the original product.
 
@@ -72,9 +74,11 @@ Canonical path:
 ChatGPT -> smp.go -> SMP MCP endpoint on the authorized VPS -> SMP core -> Firecracker
 ```
 
-The first remote operation is `describe`, which returns the live versioned capability catalog. New SMP features extend that runtime catalog rather than adding more callable tools.
+The first remote operation is `describe`, which returns the live versioned capability catalog, external-component identities, and transport limits. New SMP features extend that runtime catalog rather than adding more callable tools.
 
-Long output and long-running operations remain reachable through result handles and the same `smp.go` tool. No second plugin tool, scheduler, worker pool, database, or generalized job system is introduced.
+Long output and long-running operations remain reachable through result handles and the same `smp.go` tool. Request retry identity and detached-operation adoption survive `smp serve` restart without requiring a scheduler, worker pool, database, or generalized job system.
+
+The raw SMP and Firecracker API paths preserve the complete declared control surface. They do not silently add arbitrary host-shell execution, which is outside the guest-root authority contract.
 
 ## Reboot truth
 
