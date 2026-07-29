@@ -2,66 +2,84 @@
 
 **Smallest Maximum Power**
 
-SMP is a standalone project for building the smallest possible implementations that preserve the maximum real power of the underlying system.
+SMP is a standalone project for building the smallest possible implementations that preserve the maximum real power of the selected underlying system.
 
-The first product is an unrestricted-root Firecracker microVM: a minimal machine that gives its operator genuine root authority inside the guest without command allowlists, capability reductions, policy wrappers, artificial product tiers, or container-style privilege ceilings.
+The first product is an unrestricted-root Firecracker microVM: a minimal machine that gives its operator genuine UID 0 inside the guest without command allowlists, capability reductions, policy wrappers, artificial product tiers, or container-style privilege ceilings.
 
-SMP does not optimize for the smallest demo, the smallest source tree, or the smallest feature list. It optimizes for the smallest complete mechanism that retains 100 percent of the selected system's practical power.
+SMP minimizes total mechanism only after the complete declared power contract is preserved. A smaller design that removes power is rejected. A larger design that adds no power, necessary correctness, or essential operability is also rejected.
 
-## Governing rule
+## Current product baseline
 
-For every component, choose the smallest design that preserves full power. A smaller design that removes power is rejected. A larger design that adds no power is rejected.
+The first certified lane is intentionally exact:
+
+- `x86_64` Linux host and guest;
+- real KVM access;
+- official Firecracker `v1.15.1`, pinned by exact release asset and SHA-256 digest;
+- PCI VirtIO transport by default, with explicit MMIO override;
+- Firecracker's default host-side seccomp retained;
+- Debian stable userspace;
+- Firecracker-compatible uncompressed ELF Linux 6.1 kernel with matching modules;
+- writable persistent or disposable ext4 machine state;
+- direct key-based root SSH;
+- one local `smp` binary;
+- one optional ChatGPT callable tool: `smp.go`.
+
+SMP never resolves an unversioned latest VMM during ordinary machine creation and never falls back to a container, chroot, QEMU, host shell, reduced guest, or simulation when KVM is unavailable.
 
 ## Current phase
 
-The current phase builds power first.
+The current phase builds and proves power first.
 
-Safety systems, extensive receipts, approval workflows, policy engines, production hardening, multi-tenant controls, and governance layers are intentionally deferred. Only the minimum correctness evidence needed to establish that the system actually works is included.
+Safety systems, extensive receipts, approval workflows, policy engines, production jailer integration, multi-tenant controls, and governance layers are intentionally deferred. Minimum authentication, encrypted remote transport, exact process identity, retry identity, bounded output, and honest success or failure remain required because they are correctness, not safety theater.
 
-This is not permission to silently weaken the product. Any later safety implementation must wrap or govern the completed power surface without reducing it unless an explicit decision changes the SMP constitution.
+Any later safety implementation must govern the completed power surface without silently redefining a restricted subset as the original product.
 
 ## Standalone rule
 
-SMP is a new standalone repository. No code, architecture, schemas, scripts, services, conventions, or implementation fragments are imported from another StealthEye repository unless the owner explicitly authorizes that specific import.
+SMP is a new standalone repository. No code, architecture, schemas, scripts, services, conventions, or implementation fragments are imported from another private StealthEye repository unless the owner explicitly authorizes that exact import.
 
-External operating systems, kernels, Firecracker, standard packages, language toolchains, and documented platform interfaces are dependencies, not inherited StealthEye implementations.
+Public operating systems, kernels, Firecracker, standard packages, language toolchains, and documented platform interfaces are dependencies, not inherited StealthEye implementations.
 
 ## Canonical documents
 
 1. [SMP Constitution](docs/00-SMP-CONSTITUTION.md) — binding project laws, definitions, constraints, and decision rules.
-2. [Firecracker God-Mode Base](docs/01-FIRECRACKER-GOD-MODE-BASE.md) — complete contract for the first product, including its standalone remote-control path.
-3. [Build and Acceptance Order](docs/02-BUILD-AND-ACCEPTANCE-ORDER.md) — exact implementation sequence and completion gates.
+2. [Firecracker God-Mode Base](docs/01-FIRECRACKER-GOD-MODE-BASE.md) — exact first-product contract, Firecracker baseline, lifecycle semantics, and standalone ChatGPT control.
+3. [Build and Acceptance Order](docs/02-BUILD-AND-ACCEPTANCE-ORDER.md) — the single remaining implementation mission, execution order, and real-host completion gates.
 
-## First product definition
+## Local use
 
-The first product must boot a Firecracker microVM and provide unrestricted UID 0 inside a full Linux guest. Guest root must be able to install software, alter the guest operating system, create services, load supported guest modules, manage mounts, namespaces, cgroups, networking, firewall state, processes, users, package repositories, filesystems, and nested software stacks without an SMP-imposed restriction layer.
-
-The guest is a virtual machine, not a container. Its root authority ends at the hardware and resources presented to the microVM. Host resources are not silently exposed, and host authority is not part of the guest-root contract.
-
-## ChatGPT control
-
-SMP includes its own optional standalone ChatGPT connection. It does not require Baby, another StealthEye control plane, or a collection of per-operation plugin tools.
-
-The official integration exposes exactly one callable tool:
-
-```text
-smp.go
-```
-
-Every remote SMP capability is expressed through that one stable interface. New SMP features extend the request schema instead of adding more callable tools.
-
-Canonical path:
-
-```text
-ChatGPT -> smp.go -> SMP on the authorized VPS -> Firecracker
-```
-
-Local SMP use does not require ChatGPT or a plugin:
+The canonical zero-friction path is:
 
 ```bash
 sudo smp up
 ```
 
+That command must prepare or reuse verified pinned assets, create or reuse the default machine, start Firecracker, wait for successful initialization and direct root SSH, and open the root shell.
+
+## ChatGPT control
+
+SMP includes an optional standalone MCP mode. It does not require Baby or another StealthEye control plane.
+
+The MCP server/app identifier is `smp` and it exposes exactly one tool, `go`, producing the canonical callable identity:
+
+```text
+smp.go
+```
+
+Canonical path:
+
+```text
+ChatGPT -> smp.go -> SMP MCP endpoint on the authorized VPS -> SMP core -> Firecracker
+```
+
+The first remote operation is `describe`, which returns the live versioned capability catalog. New SMP features extend that runtime catalog rather than adding more callable tools.
+
+Long output and long-running operations remain reachable through result handles and the same `smp.go` tool. No second plugin tool, scheduler, worker pool, database, or generalized job system is introduced.
+
+## Reboot truth
+
+Firecracker does not provide a general in-place guest reboot contract. On the canonical `x86_64` lane, `smp reboot` gracefully terminates the old Firecracker process, starts a new verified process against the same persistent machine state, and reconnects. SMP must not claim the original VMM survived.
+
 ## Project status
 
-Canonical specification foundation in progress. No implementation has been certified yet.
+Canonical specification corrected and complete. No implementation has been certified yet. One implementation mission remains: build, test on the real authorized KVM host, correct failures, certify local SMP and `smp.go`, commit, and remotely verify the finished result.
