@@ -225,6 +225,7 @@ pub fn plan(machine: &str, definition: &NetworkDefinition) -> Result<NetworkPlan
                 "dport".into(),
                 port.host_port.to_string(),
                 "dnat".into(),
+                "ip".into(),
                 "to".into(),
                 format!("{}:{}", definition.guest_address, port.guest_port),
                 "comment".into(),
@@ -561,7 +562,7 @@ mod tests {
             .join("\n");
         assert!(rendered.contains("masquerade"));
         assert!(rendered.contains("127.0.0.0/8"));
-        assert!(rendered.contains("dnat"));
+        assert!(rendered.contains("dnat ip to"));
         assert!(rendered.contains("smp:default"));
         let comments = plan
             .apply_commands
