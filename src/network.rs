@@ -2,19 +2,28 @@ use crate::error::{Result, SmpError};
 use crate::model::{NetworkDefinition, PortProtocol, PortPublication};
 use crate::util::command_output;
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::net::Ipv4Addr;
 use std::process::Output;
 
 const TABLE_FAMILY: &str = "inet";
 const TABLE_NAME: &str = "smp";
+const HOST_FORWARD_FAMILY: &str = "ip";
+const HOST_FORWARD_TABLE: &str = "filter";
+const HOST_FORWARD_CHAIN: &str = "FORWARD";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NetworkPlan {
     pub definition: NetworkDefinition,
     pub apply_commands: Vec<Vec<String>>,
     pub cleanup_commands: Vec<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct HostForwardRule {
+    comment: String,
+    command: Vec<String>,
 }
 
 pub fn deterministic_definition(
@@ -293,6 +302,7 @@ pub fn apply(machine: &str, definition: &NetworkDefinition) -> Result<()> {
     }
     run(&plan.apply_commands[2])?;
     run(&plan.apply_commands[3])?;
+    enable_loopback_publication_routing(definition)?;
     for command in &plan.apply_commands[4..] {
         let chain = command.get(5).cloned().unwrap_or_default();
         if command.get(1).is_some_and(|value| value == "add")
@@ -310,11 +320,13 @@ pub fn apply(machine: &str, definition: &NetworkDefinition) -> Result<()> {
         }
         run(command)?;
     }
+    apply_host_forward_compatibility(machine, definition)?;
     Ok(())
 }
 
 pub fn cleanup(machine: &str, definition: &NetworkDefinition) -> Result<()> {
     let plan = plan(machine, definition)?;
+    cleanup_host_forward_compatibility(machine)?;
     for command in &plan.cleanup_commands[..4] {
         if let Some(chain) = command.get(5)
             && nft_chain_exists(chain)?
@@ -334,6 +346,263 @@ pub fn cleanup(machine: &str, definition: &NetworkDefinition) -> Result<()> {
         run(&plan.cleanup_commands[4])?;
     }
     Ok(())
+}
+
+fn loopback_publication_requires_route_localnet(definition: &NetworkDefinition) -> Result<bool> {
+    definition
+        .published_ports
+        .iter()
+        .try_fold(false, |required, port| {
+            let bind_address = port.bind_address.parse::<Ipv4Addr>().map_err(|_| {
+                SmpError::Invalid(format!("invalid bind address {}", port.bind_address))
+            })?;
+            Ok(required || bind_address.is_loopback())
+        })
+}
+
+fn route_localnet_path(tap: &str) -> Result<std::path::PathBuf> {
+    if tap.is_empty() || matches!(tap, "." | "..") || tap.contains('/') {
+        return Err(SmpError::Invalid(format!(
+            "invalid TAP name for route_localnet: {tap}"
+        )));
+    }
+    Ok(std::path::Path::new("/proc/sys/net/ipv4/conf")
+        .join(tap)
+        .join("route_localnet"))
+}
+
+fn enable_loopback_publication_routing(definition: &NetworkDefinition) -> Result<()> {
+    if !loopback_publication_requires_route_localnet(definition)? {
+        return Ok(());
+    }
+    let path = route_localnet_path(&definition.tap)?;
+    fs::write(&path, b"1\n").map_err(|error| SmpError::io(path.display().to_string(), error))?;
+    let observed = fs::read_to_string(&path)
+        .map_err(|error| SmpError::io(path.display().to_string(), error))?;
+    if observed.trim() != "1" {
+        return Err(SmpError::State(format!(
+            "failed to enable loopback publication routing on {}",
+            definition.tap
+        )));
+    }
+    Ok(())
+}
+
+fn host_forward_rules(machine: &str, definition: &NetworkDefinition) -> Vec<HostForwardRule> {
+    let prefix = host_forward_comment_prefix(machine);
+    let mut rules = vec![
+        HostForwardRule {
+            comment: format!("{prefix}out"),
+            command: vec![
+                "nft".to_owned(),
+                "insert".to_owned(),
+                "rule".to_owned(),
+                HOST_FORWARD_FAMILY.to_owned(),
+                HOST_FORWARD_TABLE.to_owned(),
+                HOST_FORWARD_CHAIN.to_owned(),
+                "iifname".to_owned(),
+                definition.tap.clone(),
+                "ip".to_owned(),
+                "saddr".to_owned(),
+                format!("{}/{}", definition.subnet, definition.prefix_length),
+                "accept".to_owned(),
+                "comment".to_owned(),
+                nft_comment(&format!("{prefix}out")),
+            ],
+        },
+        HostForwardRule {
+            comment: format!("{prefix}return"),
+            command: vec![
+                "nft".to_owned(),
+                "insert".to_owned(),
+                "rule".to_owned(),
+                HOST_FORWARD_FAMILY.to_owned(),
+                HOST_FORWARD_TABLE.to_owned(),
+                HOST_FORWARD_CHAIN.to_owned(),
+                "oifname".to_owned(),
+                definition.tap.clone(),
+                "ip".to_owned(),
+                "daddr".to_owned(),
+                definition.guest_address.clone(),
+                "ct".to_owned(),
+                "state".to_owned(),
+                "established,related".to_owned(),
+                "accept".to_owned(),
+                "comment".to_owned(),
+                nft_comment(&format!("{prefix}return")),
+            ],
+        },
+    ];
+    for port in &definition.published_ports {
+        let protocol = protocol_name(&port.protocol);
+        let identity = format!(
+            "{}|{}|{}|{}",
+            protocol, port.bind_address, port.host_port, port.guest_port
+        );
+        let digest = Sha256::digest(identity.as_bytes());
+        let comment = format!("{prefix}publish:{}", hex::encode(&digest[..8]));
+        rules.push(HostForwardRule {
+            comment: comment.clone(),
+            command: vec![
+                "nft".to_owned(),
+                "insert".to_owned(),
+                "rule".to_owned(),
+                HOST_FORWARD_FAMILY.to_owned(),
+                HOST_FORWARD_TABLE.to_owned(),
+                HOST_FORWARD_CHAIN.to_owned(),
+                "oifname".to_owned(),
+                definition.tap.clone(),
+                "ip".to_owned(),
+                "daddr".to_owned(),
+                definition.guest_address.clone(),
+                protocol.to_owned(),
+                "dport".to_owned(),
+                port.guest_port.to_string(),
+                "ct".to_owned(),
+                "state".to_owned(),
+                "new".to_owned(),
+                "accept".to_owned(),
+                "comment".to_owned(),
+                nft_comment(&comment),
+            ],
+        });
+    }
+    rules
+}
+
+fn host_forward_comment_prefix(machine: &str) -> String {
+    format!("smp:{machine}:host-forward-")
+}
+
+fn apply_host_forward_compatibility(machine: &str, definition: &NetworkDefinition) -> Result<()> {
+    if !nft_chain_exists_in(HOST_FORWARD_FAMILY, HOST_FORWARD_TABLE, HOST_FORWARD_CHAIN)? {
+        return Ok(());
+    }
+    let rules = host_forward_rules(machine, definition);
+    let desired = rules
+        .iter()
+        .map(|rule| (rule.comment.clone(), rule))
+        .collect::<BTreeMap<_, _>>();
+    let prefix = host_forward_comment_prefix(machine);
+    let observed = list_owned_host_forward_rules(&prefix)?;
+    let mut handles = BTreeMap::<String, Vec<u64>>::new();
+    for (comment, handle) in observed {
+        if desired.contains_key(&comment) {
+            handles.entry(comment).or_default().push(handle);
+        } else {
+            delete_host_forward_rule(handle)?;
+        }
+    }
+    for (comment, rule) in desired {
+        match handles.get(&comment).map(Vec::as_slice).unwrap_or_default() {
+            [] => run(&rule.command)?,
+            [_] => {}
+            duplicates => {
+                return Err(SmpError::Ambiguous(format!(
+                    "multiple host forward rules carry owned comment {comment}: {duplicates:?}"
+                )));
+            }
+        }
+    }
+    let observed = list_owned_host_forward_rules(&prefix)?;
+    let mut counts = BTreeMap::<String, usize>::new();
+    for (comment, _) in observed {
+        *counts.entry(comment).or_default() += 1;
+    }
+    for rule in &rules {
+        if counts.get(&rule.comment) != Some(&1) {
+            return Err(SmpError::State(format!(
+                "host forward rule {} did not reconcile exactly once",
+                rule.comment
+            )));
+        }
+    }
+    if counts.len() != rules.len() {
+        return Err(SmpError::State(format!(
+            "unexpected owned host forward rules remain for {machine}"
+        )));
+    }
+    Ok(())
+}
+
+fn cleanup_host_forward_compatibility(machine: &str) -> Result<()> {
+    if !nft_chain_exists_in(HOST_FORWARD_FAMILY, HOST_FORWARD_TABLE, HOST_FORWARD_CHAIN)? {
+        return Ok(());
+    }
+    let prefix = host_forward_comment_prefix(machine);
+    for (_, handle) in list_owned_host_forward_rules(&prefix)? {
+        delete_host_forward_rule(handle)?;
+    }
+    if !list_owned_host_forward_rules(&prefix)?.is_empty() {
+        return Err(SmpError::State(format!(
+            "owned host forward rules remain for {machine}"
+        )));
+    }
+    Ok(())
+}
+
+fn list_owned_host_forward_rules(prefix: &str) -> Result<Vec<(String, u64)>> {
+    let command = strings(&[
+        "nft",
+        "-a",
+        "list",
+        "chain",
+        HOST_FORWARD_FAMILY,
+        HOST_FORWARD_TABLE,
+        HOST_FORWARD_CHAIN,
+    ]);
+    let output = run_output(&command)?;
+    if !output.status.success() {
+        return Err(SmpError::External {
+            program: command.join(" "),
+            code: output.status.code().unwrap_or(128),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    parse_owned_rule_handles(&String::from_utf8_lossy(&output.stdout), prefix)
+}
+
+fn parse_owned_rule_handles(output: &str, prefix: &str) -> Result<Vec<(String, u64)>> {
+    let mut rules = Vec::new();
+    let marker = "comment \"";
+    for line in output.lines() {
+        let Some(start) = line.find(marker) else {
+            continue;
+        };
+        let comment_start = start + marker.len();
+        let Some(relative_end) = line[comment_start..].find('"') else {
+            return Err(SmpError::State(
+                "malformed nftables comment in host forward chain".to_owned(),
+            ));
+        };
+        let comment = &line[comment_start..comment_start + relative_end];
+        if !comment.starts_with(prefix) {
+            continue;
+        }
+        let handle = line
+            .rsplit_once("# handle ")
+            .and_then(|(_, value)| value.trim().parse::<u64>().ok())
+            .ok_or_else(|| {
+                SmpError::State(format!(
+                    "owned host forward rule lacks a numeric handle: {line}"
+                ))
+            })?;
+        rules.push((comment.to_owned(), handle));
+    }
+    Ok(rules)
+}
+
+fn delete_host_forward_rule(handle: u64) -> Result<()> {
+    run(&[
+        "nft".to_owned(),
+        "delete".to_owned(),
+        "rule".to_owned(),
+        HOST_FORWARD_FAMILY.to_owned(),
+        HOST_FORWARD_TABLE.to_owned(),
+        HOST_FORWARD_CHAIN.to_owned(),
+        "handle".to_owned(),
+        handle.to_string(),
+    ])
 }
 
 fn validate_ports(ports: &[PortPublication], existing: &[NetworkDefinition]) -> Result<()> {
@@ -422,16 +691,15 @@ fn ensure_table() -> Result<()> {
 }
 
 fn nft_chain_exists(chain: &str) -> Result<bool> {
-    Ok(run_output(&strings(&[
-        "nft",
-        "list",
-        "chain",
-        TABLE_FAMILY,
-        TABLE_NAME,
-        chain,
-    ]))?
-    .status
-    .success())
+    nft_chain_exists_in(TABLE_FAMILY, TABLE_NAME, chain)
+}
+
+fn nft_chain_exists_in(family: &str, table: &str, chain: &str) -> Result<bool> {
+    Ok(
+        run_output(&strings(&["nft", "list", "chain", family, table, chain]))?
+            .status
+            .success(),
+    )
 }
 
 fn nft_chain_has_comment(chain: &str, comment: &str) -> Result<bool> {
@@ -599,6 +867,101 @@ mod tests {
         assert_eq!(
             plan.cleanup_commands.last().and_then(|value| value.last()),
             Some(&definition.tap)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn loopback_publication_enables_only_tap_scoped_route_localnet() -> Result<()> {
+        let definition = deterministic_definition(
+            "loopback",
+            &[],
+            vec![PortPublication {
+                protocol: PortProtocol::Tcp,
+                bind_address: "127.0.0.1".to_owned(),
+                host_port: 8080,
+                guest_port: 80,
+            }],
+        )?;
+        assert!(loopback_publication_requires_route_localnet(&definition)?);
+        assert_eq!(
+            route_localnet_path(&definition.tap)?,
+            std::path::Path::new("/proc/sys/net/ipv4/conf")
+                .join(&definition.tap)
+                .join("route_localnet")
+        );
+        assert!(route_localnet_path("../all").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn non_loopback_publication_does_not_require_route_localnet() -> Result<()> {
+        let definition = deterministic_definition(
+            "external",
+            &[],
+            vec![PortPublication {
+                protocol: PortProtocol::Tcp,
+                bind_address: "0.0.0.0".to_owned(),
+                host_port: 8080,
+                guest_port: 80,
+            }],
+        )?;
+        assert!(!loopback_publication_requires_route_localnet(&definition)?);
+        Ok(())
+    }
+
+    #[test]
+    fn host_forward_rules_bypass_drop_policy_with_owned_scope() -> Result<()> {
+        let definition = deterministic_definition(
+            "default",
+            &[],
+            vec![PortPublication {
+                protocol: PortProtocol::Tcp,
+                bind_address: "127.0.0.1".to_owned(),
+                host_port: 8080,
+                guest_port: 80,
+            }],
+        )?;
+        let rules = host_forward_rules("default", &definition);
+        assert_eq!(rules.len(), 3);
+        let rendered = rules
+            .iter()
+            .map(|rule| rule.command.join(" "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("insert rule ip filter FORWARD"));
+        assert!(rendered.contains(&format!(
+            "iifname {} ip saddr {}/{}",
+            definition.tap, definition.subnet, definition.prefix_length
+        )));
+        assert!(rendered.contains(&format!(
+            "oifname {} ip daddr {} ct state established,related",
+            definition.tap, definition.guest_address
+        )));
+        assert!(rendered.contains("tcp dport 80 ct state new"));
+        assert!(
+            rules
+                .iter()
+                .all(|rule| rule.comment.starts_with("smp:default:host-forward-"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn parses_only_exact_owned_host_forward_handles() -> Result<()> {
+        let output = r#"table ip filter {
+    chain FORWARD {
+        iifname "smp0" accept comment "smp:one:host-forward-out" # handle 41
+        oifname "smp0" accept comment "smp:one:host-forward-return" # handle 42
+        iifname "other" accept comment "foreign" # handle 99
+    }
+}"#;
+        assert_eq!(
+            parse_owned_rule_handles(output, "smp:one:host-forward-")?,
+            vec![
+                ("smp:one:host-forward-out".to_owned(), 41),
+                ("smp:one:host-forward-return".to_owned(), 42),
+            ]
         );
         Ok(())
     }
