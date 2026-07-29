@@ -16,6 +16,11 @@ readonly DEBIAN_ARCH=amd64
 readonly DEBIAN_SNAPSHOT=20260711T000000Z
 readonly DEBIAN_REPOSITORY="https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/"
 readonly DEBIAN_SECURITY_REPOSITORY="https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}/"
+readonly DEBIAN_KEYRING_VERSION=2025.1
+readonly DEBIAN_KEYRING_PACKAGE="debian-archive-keyring_${DEBIAN_KEYRING_VERSION}_all.deb"
+readonly DEBIAN_KEYRING_PATH="pool/main/d/debian-archive-keyring/${DEBIAN_KEYRING_PACKAGE}"
+readonly DEBIAN_KEYRING_URL="${DEBIAN_REPOSITORY}${DEBIAN_KEYRING_PATH}"
+readonly DEBIAN_KEYRING_SHA256=9ea7778e443144ca490668737a8ab22dd3e748bb99e805e22ec055abeb3c7fac
 readonly ROOTFS_UUID=53504d31-0000-4000-8000-000000000001
 readonly SEED_TEMPLATE_UUID=53504d31-0000-4000-8000-000000000002
 
@@ -246,15 +251,31 @@ EOF
   chroot "$root" passwd -d root
 }
 
+prepare_debian_keyring() {
+  local package="$CACHE/$DEBIAN_KEYRING_PACKAGE"
+  local extracted="$BUILD/debian-archive-keyring"
+  download_verified "$DEBIAN_KEYRING_URL" "$DEBIAN_KEYRING_SHA256" "$package"
+  safe_remove "$extracted"
+  install -d -m 0700 "$extracted"
+  dpkg-deb --extract "$package" "$extracted"
+  local keyring="$extracted/usr/share/keyrings/debian-archive-keyring.gpg"
+  [[ -s "$keyring" ]]
+  printf '%s\n' "$keyring"
+}
+
 build_rootfs() {
   [[ -f "$PROVENANCE/kernel.json" ]]
   local root="$BUILD/rootfs-directory"
+  local keyring
+  local keyring_digest
+  keyring="$(prepare_debian_keyring)"
+  keyring_digest="$(sha256sum "$keyring" | awk '{print $1}')"
   safe_remove "$root"
   install -d -m 0755 "$root"
   debootstrap \
     --arch="$DEBIAN_ARCH" \
     --variant=minbase \
-    --keyring=/usr/share/keyrings/debian-archive-keyring.gpg \
+    --keyring="$keyring" \
     "$DEBIAN_SUITE" "$root" "$DEBIAN_REPOSITORY"
   cat >"$root/etc/apt/sources.list" <<EOF
 deb [check-valid-until=no] $DEBIAN_REPOSITORY $DEBIAN_SUITE main
@@ -328,6 +349,10 @@ EOF
     --arg snapshotTimestamp "$DEBIAN_SNAPSHOT" \
     --arg repository "$DEBIAN_REPOSITORY" \
     --arg securityRepository "$DEBIAN_SECURITY_REPOSITORY" \
+    --arg keyringVersion "$DEBIAN_KEYRING_VERSION" \
+    --arg keyringUrl "$DEBIAN_KEYRING_URL" \
+    --arg keyringPackageSha256 "$DEBIAN_KEYRING_SHA256" \
+    --arg keyringSha256 "$keyring_digest" \
     --arg mainInReleaseSha256 "$(sha256sum "$main_inrelease" | awk '{print $1}')" \
     --arg securityInReleaseSha256 "$(sha256sum "$security_inrelease" | awk '{print $1}')" \
     --arg packageListSha256 "$package_digest" \
@@ -345,6 +370,12 @@ EOF
       architecture:$architecture,
       snapshotTimestamp:$snapshotTimestamp,
       repositories:[$repository,$securityRepository],
+      archiveKeyring:{
+        version:$keyringVersion,
+        sourceUrl:$keyringUrl,
+        packageSha256:$keyringPackageSha256,
+        keyringSha256:$keyringSha256
+      },
       inReleaseSha256:[$mainInReleaseSha256,$securityInReleaseSha256],
       packageListPath:"provenance/debian-packages.txt",
       packageListSha256:$packageListSha256,

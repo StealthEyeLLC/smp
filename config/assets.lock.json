@@ -23,6 +23,11 @@
     "architecture": "amd64",
     "snapshotTimestamp": "20260711T000000Z",
     "repository": "https://snapshot.debian.org/archive/debian/20260711T000000Z/",
-    "securityRepository": "https://snapshot.debian.org/archive/debian-security/20260711T000000Z/"
+    "securityRepository": "https://snapshot.debian.org/archive/debian-security/20260711T000000Z/",
+    "archiveKeyring": {
+      "version": "2025.1",
+      "sourceUrl": "https://snapshot.debian.org/archive/debian/20260711T000000Z/pool/main/d/debian-archive-keyring/debian-archive-keyring_2025.1_all.deb",
+      "packageSha256": "9ea7778e443144ca490668737a8ab22dd3e748bb99e805e22ec055abeb3c7fac"
+    }
   }
 }
