@@ -1,0 +1,23 @@
+[Unit]
+Description=SMP-only secure MCP tunnel
+Documentation=https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
+After=network-online.target smp.service
+Wants=network-online.target smp.service
+ConditionPathExists=/etc/smp/credentials/tunnel-token
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStartPre=/usr/bin/curl --fail --silent --show-error http://127.0.0.1:7745/readyz
+ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate run --token-file /etc/smp/credentials/tunnel-token
+Restart=on-failure
+RestartSec=5s
+KillMode=control-group
+TimeoutStopSec=20s
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
