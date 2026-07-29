@@ -48,7 +48,7 @@ printf 'Checking SMP repository commit %s\n' "$COMMIT"
 printf 'Building SMP commit %s\n' "$COMMIT"
 (
     cd "$SOURCE"
-    SMP_BUILD_COMMIT="$COMMIT" cargo build --locked --release
+    SMP_BUILD_COMMIT="$COMMIT" cargo build --release
 )
 CANDIDATE="$SOURCE/target/release/smp"
 [[ -x $CANDIDATE ]] || { printf 'SMP release binary was not produced\n' >&2; exit 70; }
