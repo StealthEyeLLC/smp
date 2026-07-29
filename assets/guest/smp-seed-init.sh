@@ -44,9 +44,10 @@ source "$MOUNT/network.env"
 [[ "$ADDRESS" =~ ^[0-9.]+/[0-9]+$ ]] || fail 'invalid ADDRESS'
 [[ "$GATEWAY" =~ ^[0-9.]+$ ]] || fail 'invalid GATEWAY'
 [[ "$DNS" =~ ^[0-9.,]+$ ]] || fail 'invalid DNS'
+[[ "$MAC" =~ ^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$ ]] || fail 'invalid MAC'
 cat > /etc/systemd/network/10-smp.network <<NETWORK
 [Match]
-Name=eth0
+MACAddress=$MAC
 
 [Network]
 Address=$ADDRESS
