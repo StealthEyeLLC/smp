@@ -5,9 +5,10 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::fs;
 use std::io::{Read, Write};
+use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -37,7 +38,11 @@ pub fn generate_config(record: &MachineRecord) -> Result<Value> {
             "io_engine": "Sync"
         }));
     }
-    for disk in record.disks.iter().filter(|disk| disk.drive_id != "root" && disk.drive_id != "seed") {
+    for disk in record
+        .disks
+        .iter()
+        .filter(|disk| disk.drive_id != "root" && disk.drive_id != "seed")
+    {
         drives.push(json!({
             "drive_id": disk.drive_id,
             "path_on_host": disk.path,
@@ -74,11 +79,19 @@ pub fn write_config(record: &MachineRecord) -> Result<()> {
     atomic_write_json(Path::new(&record.config_path), &config, 0o600)
 }
 
-pub fn reject_shared_writable_disk(paths: &RuntimePaths, candidate: &MachineRecord) -> Result<()> {
+pub fn reject_shared_writable_disk(
+    paths: &RuntimePaths,
+    candidate: &MachineRecord,
+) -> Result<()> {
     for disk in candidate.disks.iter().filter(|disk| disk.writable) {
-        let candidate_path = fs::canonicalize(&disk.path).unwrap_or_else(|_| disk.path.clone().into());
+        let candidate_path = canonical_or_declared(&disk.path);
         for other in list_machines(paths)? {
-            if other.name == candidate.name || !matches!(other.state, MachineState::Starting | MachineState::Running | MachineState::Ready) {
+            if other.name == candidate.name
+                || !matches!(
+                    other.state,
+                    MachineState::Starting | MachineState::Running | MachineState::Ready
+                )
+            {
                 continue;
             }
             let Some(process) = &other.process else {
@@ -93,8 +106,7 @@ pub fn reject_shared_writable_disk(paths: &RuntimePaths, candidate: &MachineReco
                 continue;
             }
             for other_disk in other.disks.iter().filter(|value| value.writable) {
-                let other_path = fs::canonicalize(&other_disk.path).unwrap_or_else(|_| other_disk.path.clone().into());
-                if other_path == candidate_path {
+                if canonical_or_declared(&other_disk.path) == candidate_path {
                     bail!(
                         "writable disk {} is already attached to running machine {}",
                         disk.path,
@@ -107,12 +119,20 @@ pub fn reject_shared_writable_disk(paths: &RuntimePaths, candidate: &MachineReco
     Ok(())
 }
 
-pub fn launch(paths: &RuntimePaths, record: &MachineRecord, foreground: bool) -> Result<ProcessIdentity> {
+pub fn launch(
+    paths: &RuntimePaths,
+    record: &MachineRecord,
+    foreground: bool,
+) -> Result<ProcessIdentity> {
     reject_shared_writable_disk(paths, record)?;
     write_config(record)?;
     let socket = Path::new(&record.api_socket);
+    if let Some(parent) = socket.parent() {
+        fs::create_dir_all(parent)?;
+    }
     if socket.exists() {
-        fs::remove_file(socket).with_context(|| format!("remove stale socket {}", socket.display()))?;
+        fs::remove_file(socket)
+            .with_context(|| format!("remove stale socket {}", socket.display()))?;
     }
 
     let mut command = Command::new(&record.firecracker.path);
@@ -126,11 +146,17 @@ pub fn launch(paths: &RuntimePaths, record: &MachineRecord, foreground: bool) ->
     }
 
     if foreground {
-        command.stdin(Stdio::inherit()).stdout(Stdio::inherit()).stderr(Stdio::inherit());
+        command
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
     } else {
         let serial = open_append(Path::new(&record.serial_log_path), 0o600)?;
         let errors = serial.try_clone()?;
-        command.stdin(Stdio::null()).stdout(Stdio::from(serial)).stderr(Stdio::from(errors));
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(serial))
+            .stderr(Stdio::from(errors));
         unsafe {
             command.pre_exec(|| {
                 if libc::setsid() < 0 {
@@ -147,10 +173,7 @@ pub fn launch(paths: &RuntimePaths, record: &MachineRecord, foreground: bool) ->
     let start_time_ticks = loop {
         match process_start_time_ticks(pid) {
             Ok(value) => break value,
-            Err(error) if Instant::now() < deadline => {
-                let _ = error;
-                thread::sleep(Duration::from_millis(20));
-            }
+            Err(_) if Instant::now() < deadline => thread::sleep(Duration::from_millis(20)),
             Err(error) => return Err(error).context("identify Firecracker process"),
         }
     };
@@ -204,19 +227,29 @@ pub fn api_request(
     headers: &[(String, String)],
     body: &[u8],
 ) -> Result<(u16, Vec<u8>)> {
-    if !path.starts_with('/') || path.contains("..") || path.contains('\n') || path.contains('\r') {
+    if !path.starts_with('/')
+        || path.contains("..")
+        || path.contains('\n')
+        || path.contains('\r')
+    {
         bail!("invalid Firecracker API path");
     }
-    if !method.bytes().all(|value| value.is_ascii_uppercase()) {
+    if method.is_empty() || !method.bytes().all(|value| value.is_ascii_uppercase()) {
         bail!("invalid Firecracker API method");
     }
-    let identity = record.process.as_ref().ok_or_else(|| anyhow::anyhow!("machine has no process identity"))?;
+    let identity = record
+        .process
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("machine has no process identity"))?;
     if !verify_process(identity)? {
         bail!("selected machine Firecracker process is not verified");
     }
     let expected_socket = Path::new(&record.api_socket);
-    if !expected_socket.is_socket() {
-        bail!("selected machine API socket is unavailable");
+    let is_socket = fs::metadata(expected_socket)
+        .map(|metadata| metadata.file_type().is_socket())
+        .unwrap_or(false);
+    if !is_socket {
+        bail!("selected machine API socket is unavailable or not a Unix socket");
     }
     let mut stream = UnixStream::connect(expected_socket)
         .with_context(|| format!("connect {}", expected_socket.display()))?;
@@ -269,10 +302,16 @@ pub fn request_shutdown(record: &MachineRecord) -> Result<()> {
     Ok(())
 }
 
+fn canonical_or_declared(path: &str) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{AssetIdentity, DiskRecord, MachineMode, NetworkRecord, PublishedPort};
+    use crate::model::{
+        AssetIdentity, DiskRecord, MachineMode, NetworkRecord, PublishedPort,
+    };
 
     fn record() -> MachineRecord {
         MachineRecord {
@@ -285,11 +324,43 @@ mod tests {
             vcpu_count: 2,
             memory_mib: 1024,
             boot_args: "root=UUID=test rw console=ttyS0 reboot=k".to_owned(),
-            firecracker: AssetIdentity { path: "/fc".to_owned(), sha256: "x".to_owned(), version: "1.15.1".to_owned(), provenance_path: None },
-            kernel: AssetIdentity { path: "/vmlinux".to_owned(), sha256: "y".to_owned(), version: "6.1.177".to_owned(), provenance_path: None },
-            rootfs_base: AssetIdentity { path: "/rootfs".to_owned(), sha256: "z".to_owned(), version: "13.6".to_owned(), provenance_path: None },
-            disks: vec![DiskRecord { drive_id: "root".to_owned(), path: "/machine/root.ext4".to_owned(), logical_size_bytes: 1, filesystem_uuid: Some("test".to_owned()), writable: true, attached: false, base_image_sha256: Some("z".to_owned()) }],
-            network: NetworkRecord { tap_name: "smp0".to_owned(), guest_mac: "06:53:4d:00:00:01".to_owned(), guest_address: "172.31.4.2".to_owned(), gateway_address: "172.31.4.1".to_owned(), prefix_length: 30, dns_servers: vec![], published_ports: Vec::<PublishedPort>::new(), managed: true },
+            firecracker: AssetIdentity {
+                path: "/fc".to_owned(),
+                sha256: "x".to_owned(),
+                version: "1.15.1".to_owned(),
+                provenance_path: None,
+            },
+            kernel: AssetIdentity {
+                path: "/vmlinux".to_owned(),
+                sha256: "y".to_owned(),
+                version: "6.1.177".to_owned(),
+                provenance_path: None,
+            },
+            rootfs_base: AssetIdentity {
+                path: "/rootfs".to_owned(),
+                sha256: "z".to_owned(),
+                version: "13.6".to_owned(),
+                provenance_path: None,
+            },
+            disks: vec![DiskRecord {
+                drive_id: "root".to_owned(),
+                path: "/machine/root.ext4".to_owned(),
+                logical_size_bytes: 1,
+                filesystem_uuid: Some("test".to_owned()),
+                writable: true,
+                attached: false,
+                base_image_sha256: Some("z".to_owned()),
+            }],
+            network: NetworkRecord {
+                tap_name: "smp0".to_owned(),
+                guest_mac: "06:53:4d:00:00:01".to_owned(),
+                guest_address: "172.31.4.2".to_owned(),
+                gateway_address: "172.31.4.1".to_owned(),
+                prefix_length: 30,
+                dns_servers: vec![],
+                published_ports: Vec::<PublishedPort>::new(),
+                managed: true,
+            },
             ssh_user: "root".to_owned(),
             ssh_key_path: "/key".to_owned(),
             api_socket: "/run/smp/default.firecracker.sock".to_owned(),
@@ -307,6 +378,9 @@ mod tests {
     fn config_enables_entropy_and_preserves_raw_paths() {
         let config = generate_config(&record()).unwrap();
         assert!(config.get("entropy").is_some());
-        assert_eq!(config["drives"][0]["path_on_host"], "/machine/root.ext4");
+        assert_eq!(
+            config["drives"][0]["path_on_host"],
+            "/machine/root.ext4"
+        );
     }
 }
