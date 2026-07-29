@@ -160,14 +160,16 @@ set -e
 [[ "$invalid_rc" -ne 0 ]]
 [[ "$(smp status "$invalid_machine" --json | jq -r .state)" != ready ]]
 
-pci_tap="$(smp inspect "$pci_machine" | jq -er .network.tap)"
+pci_inspect="$(smp inspect "$pci_machine")"
+pci_tap="$(jq -er .network.tap <<<"$pci_inspect")"
+pci_api_socket="$(jq -er .apiSocket <<<"$pci_inspect")"
 mmio_tap="$(smp inspect "$mmio_machine" | jq -er .network.tap)"
 smp stop "$pci_machine"
 smp stop "$mmio_machine"
 smp destroy "$pci_machine" --delete-disk
 smp destroy "$mmio_machine" --delete-disk
 [[ ! -e "/sys/class/net/$pci_tap" && ! -e "/sys/class/net/$mmio_tap" ]]
-[[ ! -S "/var/lib/smp/machines/$pci_machine/firecracker.sock" ]]
+[[ ! -S "$pci_api_socket" ]]
 if nft list table inet smp 2>/dev/null | grep -Fq "smp:$pci_machine"; then
   exit 1
 fi
