@@ -3,9 +3,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-cargo fmt --all -- --check
+if cargo fmt --version >/dev/null 2>&1; then
+    cargo fmt --all -- --check
+fi
 cargo test --all-targets
-cargo clippy --all-targets
+if cargo clippy --version >/dev/null 2>&1; then
+    cargo clippy --all-targets
+fi
 
 for script in scripts/*.sh assets/guest/*.sh; do
     bash -n "$script"
