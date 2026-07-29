@@ -1,0 +1,28 @@
+[Unit]
+Description=SMP standalone MCP server
+Documentation=https://github.com/StealthEyeLLC/smp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/bin/smp serve --listen 127.0.0.1:7745
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2s
+KillMode=process
+TimeoutStopSec=20s
+RuntimeDirectory=smp
+RuntimeDirectoryMode=0700
+StateDirectory=smp
+StateDirectoryMode=0700
+LogsDirectory=smp
+LogsDirectoryMode=0700
+UMask=0077
+LimitNOFILE=65536
+NoNewPrivileges=no
+
+[Install]
+WantedBy=multi-user.target
