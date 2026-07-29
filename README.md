@@ -37,21 +37,25 @@ Safety systems, extensive receipts, approval workflows, policy engines, producti
 
 Any later safety implementation must govern the completed power surface without silently redefining a restricted subset as the original product.
 
-## Least-theater law
+## Least-theater and full-standalone law
 
 **Use the least amount of theater possible, always.**
 
-Implementation begins after the smallest source-integrity check needed to avoid editing the wrong repository or commit. Established owner-confirmed infrastructure is not repeatedly re-proven. Verification happens at the point where its result changes the next action. A tool limitation is not evidence that established infrastructure is absent.
+**SMP is standalone during source implementation, build, installation, testing, operation, recovery, upgrade, cleanup, and removal.**
 
-For the current build, the authorized VPS and working KVM lane are accepted established facts. Prompt 1 must begin implementation through the available durable execution surface rather than searching for a special host-shell or KVM-probe operation. Fresh-tab `smp.go` verification belongs to Prompt 2.
+Prompt 1 must not invoke Baby, Fix, StealthEye Horsey, Quirt, or another private StealthEye operator, broker, workspace system, deployment system, or execution proxy.
+
+Implementation begins after the smallest source-integrity check needed to avoid editing the wrong repository or commit. Established owner-confirmed infrastructure is not repeatedly re-proven. Verification happens at the point where its result changes the next action.
+
+The repository must provide an SMP-owned direct bootstrap entrypoint. When the current tab cannot perform that first host bootstrap directly, it completes every repository-side prerequisite and stops at that exact one-action boundary rather than routing through another private control plane.
 
 ## Standalone rule
 
-SMP is a new standalone repository. No code, architecture, schemas, scripts, services, conventions, or implementation fragments are imported from another private StealthEye repository unless the owner explicitly authorizes that exact import.
+SMP is a new standalone repository and product. No code, architecture, schemas, scripts, services, conventions, implementation fragments, build execution, installation authority, or runtime authority are imported from another private StealthEye system unless the owner explicitly authorizes that exact exception.
 
 Public operating systems, kernels, Firecracker, standard packages, language toolchains, Git, GitHub, and documented platform interfaces are dependencies or development tools, not inherited StealthEye implementations.
 
-SMP may share the authorized Linux VPS with Baby while remaining standalone. It must have its own process, service, endpoint or tunnel identity, credentials, sockets, state root, logs, and recovery behavior. Baby must not be in the SMP runtime path.
+SMP may share a Linux host with unrelated services, but it must own its own process, service, endpoint or tunnel identity, credentials, sockets, state root, logs, lifecycle, build path, bootstrap, and recovery behavior.
 
 ## Canonical documents
 
@@ -59,9 +63,9 @@ SMP may share the authorized Linux VPS with Baby while remaining standalone. It 
 2. [Firecracker God-Mode Base](docs/01-FIRECRACKER-GOD-MODE-BASE.md) — exact first-product contract, Firecracker baseline, lifecycle semantics, and standalone ChatGPT control.
 3. [Build and Acceptance Order](docs/02-BUILD-AND-ACCEPTANCE-ORDER.md) — implementation order and capability acceptance.
 4. [Standalone Integrations and Operations](docs/03-STANDALONE-INTEGRATIONS-AND-OPERATIONS.md) — the `SMP` plugin, dedicated VPS connection, GitHub App role, service layout, credentials, upgrade behavior, and independence tests.
-5. [Least-Theater Execution Law](docs/04-LEAST-THEATER-LAW.md) — constitutional amendment requiring immediate execution, point-of-use verification, and minimal ceremony.
+5. [Least-Theater and Full-Standalone Execution Law](docs/04-LEAST-THEATER-LAW.md) — constitutional amendment requiring immediate execution, fully standalone build and runtime, point-of-use verification, and minimal ceremony.
 
-Document 5 overrides conflicting preflight, verification, evidence, and prompt language in documents 1 through 4.
+Document 5 overrides conflicting preflight, verification, evidence, bootstrap, build-operator, and prompt language in documents 1 through 4.
 
 ## Local use
 
@@ -99,13 +103,13 @@ Long output and long-running operations remain reachable through result handles 
 
 The raw SMP and Firecracker API paths preserve the complete declared control surface. They do not silently add arbitrary host-shell execution, which is outside the guest-root authority contract.
 
-The private plugin may use a dedicated secure MCP tunnel. The SMP tunnel, credential, service, and endpoint must be separate from Baby even when both products use the same VPS.
+The private plugin uses a dedicated SMP connection. Its tunnel, credential, service, endpoint, state, and logs are SMP-owned.
 
 ## GitHub repository access
 
 The existing GitHub App installation for `StealthEyeLLC` was verified on 2026-07-29 to include `StealthEyeLLC/smp` with reported `admin`, `maintain`, `push`, `pull`, and `triage` repository capabilities. The default branch is `main`.
 
-That GitHub App is authorized development and repository-management infrastructure. It may be used to inspect, commit, branch, review, and remotely verify SMP according to its current permissions. It is not part of the installed SMP runtime and must not be required to start or operate microVMs.
+The GitHub App may manage the repository. It is not an SMP build runner, host executor, bootstrap authority, or runtime dependency.
 
 Check the repository, source commit, clean state, and usable write path once at mission start. Recheck access only when an actual repository operation fails or current evidence indicates access changed. GitHub App private keys and tokens must never be committed, embedded in a guest image, placed in the seed disk, or exposed through `smp.go`.
 
@@ -115,4 +119,4 @@ Firecracker does not provide a general in-place guest reboot contract. On the ca
 
 ## Project status
 
-The canonical specification is complete across the five documents above. Implementation is split into two honest prompts: Prompt 1 builds SMP immediately through the available durable execution surface and prepares the dedicated tunnel and plugin; Prompt 2 runs in a fresh tab and verifies the actual `smp.go` integration end to end.
+The specification now requires a fully standalone build and runtime. Prompt 1 implements the repository and SMP-owned bootstrap without invoking Horsey, Baby, Fix, or another private StealthEye operator. Prompt 2 begins after direct SMP bootstrap and verifies the actual `SMP` plugin and `smp.go` end to end.
