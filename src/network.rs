@@ -7,9 +7,8 @@ use std::process::{Command, Stdio};
 pub fn default_network(name: &str, published_ports: Vec<PublishedPort>) -> NetworkRecord {
     let digest = sha256_bytes(name.as_bytes());
     let octet = 4 + (u8::from_str_radix(&digest[0..2], 16).unwrap_or(0) % 240);
-    let suffix = &digest[..8];
     NetworkRecord {
-        tap_name: format!("smp{}", &suffix[..8]),
+        tap_name: format!("smp{}", &digest[..8]),
         guest_mac: format!(
             "06:53:4d:{:02x}:{:02x}:{:02x}",
             octet,
@@ -26,7 +25,14 @@ pub fn default_network(name: &str, published_ports: Vec<PublishedPort>) -> Netwo
 }
 
 pub fn check_collision(network: &NetworkRecord) -> Result<()> {
-    let output = run_output("ip", &[OsString::from("link"), OsString::from("show"), OsString::from(&network.tap_name)])?;
+    let output = run_output(
+        "ip",
+        &[
+            OsString::from("link"),
+            OsString::from("show"),
+            OsString::from(&network.tap_name),
+        ],
+    )?;
     if output.status.success() {
         bail!("network collision: TAP {} already exists", network.tap_name);
     }
@@ -37,11 +43,17 @@ pub fn check_collision(network: &NetworkRecord) -> Result<()> {
             OsString::from("addr"),
             OsString::from("show"),
             OsString::from("to"),
-            OsString::from(format!("{}/{}", network.gateway_address, network.prefix_length)),
+            OsString::from(format!(
+                "{}/{}",
+                network.gateway_address, network.prefix_length
+            )),
         ],
     )?;
     if output.status.success() && !output.stdout.is_empty() {
-        bail!("network collision: gateway {} is already assigned", network.gateway_address);
+        bail!(
+            "network collision: gateway {} is already assigned",
+            network.gateway_address
+        );
     }
     Ok(())
 }
@@ -51,14 +63,20 @@ pub fn create(name: &str, network: &NetworkRecord) -> Result<()> {
         return Ok(());
     }
     check_collision(network)?;
-    run_checked("ip", &["tuntap", "add", "dev", &network.tap_name, "mode", "tap"])?;
+    run_checked(
+        "ip",
+        &["tuntap", "add", "dev", &network.tap_name, "mode", "tap"],
+    )?;
     let result = (|| {
         run_checked(
             "ip",
             &[
                 "addr",
                 "add",
-                &format!("{}/{}", network.gateway_address, network.prefix_length),
+                &format!(
+                    "{}/{}",
+                    network.gateway_address, network.prefix_length
+                ),
                 "dev",
                 &network.tap_name,
             ],
@@ -96,31 +114,40 @@ pub fn exists(network: &NetworkRecord) -> bool {
 fn install_nftables(name: &str, network: &NetworkRecord) -> Result<()> {
     let table = table_name(name);
     let outbound = default_route_interface()?;
-    let mut script = format!(
-        "table ip {table} {{\n\
-         chain prerouting {{ type nat hook prerouting priority dstnat; policy accept; }}\n\
-         chain forward {{ type filter hook forward priority filter; policy accept; \
-         iifname \"{}\" accept; oifname \"{}\" ct state established,related accept; }}\n\
-         chain postrouting {{ type nat hook postrouting priority srcnat; policy accept; \
-         ip saddr {}/{} oifname \"{}\" masquerade; }}\n",
-        network.tap_name,
-        network.tap_name,
-        subnet(network),
-        network.prefix_length,
-        outbound
-    );
+    let mut prerouting_rules = String::new();
     for port in &network.published_ports {
         let protocol = match port.protocol.as_str() {
             "tcp" => "tcp",
             "udp" => "udp",
             other => bail!("unsupported port protocol {other}"),
         };
-        script.push_str(&format!(
-            "add rule ip {table} prerouting {protocol} dport {} dnat to {}:{}\n",
+        prerouting_rules.push_str(&format!(
+            "    {protocol} dport {} dnat to {}:{}\n",
             port.host_port, network.guest_address, port.guest_port
         ));
     }
-    script.push_str("}\n");
+    let script = format!(
+        "table ip {table} {{\n\
+         chain prerouting {{\n\
+           type nat hook prerouting priority dstnat; policy accept;\n\
+         {prerouting_rules}\
+         }}\n\
+         chain forward {{\n\
+           type filter hook forward priority filter; policy accept;\n\
+           iifname \"{}\" accept\n\
+           oifname \"{}\" ct state established,related accept\n\
+         }}\n\
+         chain postrouting {{\n\
+           type nat hook postrouting priority srcnat; policy accept;\n\
+           ip saddr {}/{} oifname \"{}\" masquerade\n\
+         }}\n\
+         }}\n",
+        network.tap_name,
+        network.tap_name,
+        subnet(network),
+        network.prefix_length,
+        outbound
+    );
 
     let mut child = Command::new("nft")
         .args(["-f", "-"])
@@ -130,10 +157,17 @@ fn install_nftables(name: &str, network: &NetworkRecord) -> Result<()> {
         .spawn()
         .context("start nft")?;
     use std::io::Write;
-    child.stdin.as_mut().expect("piped stdin").write_all(script.as_bytes())?;
+    child
+        .stdin
+        .as_mut()
+        .expect("piped stdin")
+        .write_all(script.as_bytes())?;
     let output = child.wait_with_output()?;
     if !output.status.success() {
-        bail!("nftables setup failed: {}", String::from_utf8_lossy(&output.stderr).trim());
+        bail!(
+            "nftables setup failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
     Ok(())
 }
@@ -144,7 +178,10 @@ fn default_route_interface() -> Result<String> {
         .output()
         .context("inspect default route")?;
     if !output.status.success() {
-        bail!("cannot inspect default route: {}", String::from_utf8_lossy(&output.stderr));
+        bail!(
+            "cannot inspect default route: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
     let text = String::from_utf8_lossy(&output.stdout);
     let fields: Vec<&str> = text.split_whitespace().collect();
@@ -161,7 +198,11 @@ fn table_name(name: &str) -> String {
 }
 
 fn subnet(network: &NetworkRecord) -> String {
-    network.gateway_address.trim_end_matches(".1").to_owned() + ".0"
+    network
+        .gateway_address
+        .trim_end_matches(".1")
+        .to_owned()
+        + ".0"
 }
 
 fn run_checked(program: &str, args: &[&str]) -> Result<()> {
@@ -183,8 +224,14 @@ mod tests {
 
     #[test]
     fn default_network_is_deterministic() {
-        assert_eq!(default_network("default", vec![]).tap_name, default_network("default", vec![]).tap_name);
-        assert_ne!(default_network("default", vec![]).guest_address, default_network("other", vec![]).guest_address);
+        assert_eq!(
+            default_network("default", vec![]).tap_name,
+            default_network("default", vec![]).tap_name
+        );
+        assert_ne!(
+            default_network("default", vec![]).guest_address,
+            default_network("other", vec![]).guest_address
+        );
     }
 
     #[test]
