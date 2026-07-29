@@ -17,7 +17,7 @@ pub const MAX_TIMEOUT_SECONDS: u64 = 86_400;
 pub const REQUEST_RETENTION_SECONDS: u64 = 604_800;
 pub const RESULT_RETENTION_SECONDS: u64 = 604_800;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MachineState {
     Absent,
@@ -30,14 +30,14 @@ pub enum MachineState {
     Stale,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MachineMode {
     Persistent,
     Disposable,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum VirtioTransport {
     Pci,
