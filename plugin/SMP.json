@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "displayName": "SMP",
+  "description": "Standalone Smallest Maximum Power Firecracker microVM control.",
+  "mcpServerId": "smp",
+  "connection": {
+    "transport": "streamable-http",
+    "url": "https://REPLACE_WITH_DEDICATED_SMP_TUNNEL_HOSTNAME/mcp",
+    "localOrigin": "http://127.0.0.1:7745/mcp",
+    "authentication": "workspace-configured-private-connection"
+  },
+  "toolContract": {
+    "onlyTool": "go",
+    "canonicalCallableIdentity": "smp.go",
+    "inputSchemaPath": "plugin/smp.go.schema.json"
+  },
+  "firstOperation": "describe",
+  "runtimeDependencies": {
+    "baby": false,
+    "fix": false,
+    "quirt": false,
+    "github": false
+  }
+}
