@@ -104,7 +104,7 @@ download_verified() {
   fi
   if [[ ! -f "$destination" ]]; then
     curl --fail --location --proto '=https' --tlsv1.2 --output "$destination.part" "$url"
-    printf '%s  %s\n' "$expected" "$destination.part" | sha256sum --check -
+    printf '%s  %s\n' "$expected" "$destination.part" | sha256sum --check - >/dev/null
     mv -f -- "$destination.part" "$destination"
   fi
 }
