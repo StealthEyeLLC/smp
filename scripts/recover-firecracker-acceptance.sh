@@ -15,8 +15,15 @@ OBSERVED_COMMIT="$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
 [[ -x /usr/local/bin/smp ]] || { printf 'installed SMP binary is unavailable\n' >&2; exit 69; }
 [[ -r /var/lib/smp/assets/manifest.json ]] || { printf 'SMP asset manifest is unavailable\n' >&2; exit 66; }
 
+if ! command -v iptables >/dev/null; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends iptables
+fi
+
 install -d -m 0755 /usr/lib/smp /usr/lib/smp/assets/guest
 install -m 0755 "$SOURCE_ROOT/scripts/repair-rootfs.sh" /usr/lib/smp/repair-rootfs.sh
+install -m 0755 "$SOURCE_ROOT/scripts/repair-host-network.sh" /usr/lib/smp/repair-host-network.sh
 install -m 0755 "$SOURCE_ROOT/scripts/acceptance.sh" /usr/lib/smp/acceptance.sh
 install -m 0755 "$SOURCE_ROOT/scripts/prompt2-handoff.sh" /usr/lib/smp/prompt2-handoff.sh
 install -m 0755 "$SOURCE_ROOT/assets/guest/smp-seed-init.sh" /usr/lib/smp/assets/guest/smp-seed-init.sh
@@ -25,6 +32,8 @@ install -m 0644 "$SOURCE_ROOT/assets/guest/smp-seed-init.service" /usr/lib/smp/a
 rm -f /var/lib/smp/results/acceptance/result.json
 PRIMARY_STATUS="$(/usr/local/bin/smp status smp-cert-persistent --json 2>/dev/null || true)"
 if jq -e '.state == "ready" and (.process.pid | type == "number")' <<<"$PRIMARY_STATUS" >/dev/null 2>&1; then
+    printf 'Repairing host forwarding for the existing ready persistent VM\n'
+    /usr/lib/smp/repair-host-network.sh smp-cert-persistent
     printf 'Resuming acceptance from the existing ready persistent VM\n'
     /usr/lib/smp/acceptance.sh --resume-primary
 else
