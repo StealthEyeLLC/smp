@@ -13,6 +13,10 @@ fi
     printf 'Cargo executable is unavailable: %s\n' "$CARGO_BIN" >&2
     exit 1
 }
+command -v shellcheck >/dev/null || {
+    printf 'shellcheck is required for repository certification\n' >&2
+    exit 1
+}
 
 cargo_run() {
     "$CARGO_BIN" "$@"
@@ -23,14 +27,14 @@ if [[ ${SMP_CARGO_LOCKED:-0} == 1 ]]; then
     cargo_run metadata --format-version 1 "${LOCK_ARGS[@]}" >/dev/null
 fi
 
+cargo_run fmt --all -- --check
+cargo_run clippy --all-targets "${LOCK_ARGS[@]}" -- -D warnings
 cargo_run test --all-targets "${LOCK_ARGS[@]}"
 
 for script in scripts/*.sh assets/guest/*.sh; do
     bash -n "$script"
 done
-if command -v shellcheck >/dev/null; then
-    shellcheck --severity=error scripts/*.sh assets/guest/*.sh
-fi
+shellcheck --severity=error scripts/*.sh assets/guest/*.sh
 
 jq -e '.displayName == "SMP" and .toolContract.onlyTool == "go" and .toolContract.canonicalCallableIdentity == "smp.go"' plugin/SMP.json >/dev/null
 jq -e '.properties.schemaVersion.const == 1 and (.required | index("operation")) != null' plugin/smp.go.schema.json >/dev/null
@@ -45,6 +49,15 @@ TOOLS_LIST_COUNT="$(grep -R --include='*.rs' -F '"name": "go"' src/server.rs | w
     printf 'expected one MCP tool registration, found %s\n' "$TOOLS_LIST_COUNT" >&2
     exit 1
 }
+
+# The Rust network lifecycle must own host-chain insertion and cleanup before
+# Firecracker waits for guest SSH. The legacy-named helper is audit-only.
+grep -Fq 'SMP_PR_' src/network.rs
+grep -Fq 'SMP_NO_' src/network.rs
+grep -Fq 'cleanup_owned_chains' src/network.rs
+grep -Fq 'core-owned host networking verified' scripts/repair-host-network.sh
+! grep -Eq 'iptables[[:space:]].*(-I|--insert)|sysctl[[:space:]].*-w' scripts/repair-host-network.sh
+
 ! grep -R -nE '(Baby|Fix|Horsey|Quirt).*(socket|service|credential|state|endpoint)' src scripts packaging plugin --exclude='test-repository.sh'
 
 printf 'repository tests passed\n'
