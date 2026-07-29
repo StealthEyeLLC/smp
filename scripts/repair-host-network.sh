@@ -2,71 +2,68 @@
 set -euo pipefail
 umask 077
 
-MACHINE=${1:-smp-cert-persistent}
+MACHINE=${1:-}
 [[ $(id -u) -eq 0 ]] || { printf 'repair-host-network.sh requires root\n' >&2; exit 77; }
-for tool in ip iptables jq smp sysctl; do
-    command -v "$tool" >/dev/null || { printf 'missing host network repair tool: %s\n' "$tool" >&2; exit 69; }
+[[ $MACHINE =~ ^[a-z][a-z0-9-]{0,62}$ ]] || { printf 'expected a canonical machine name\n' >&2; exit 64; }
+for tool in ip iptables iptables-save jq sha256sum smp; do
+    command -v "$tool" >/dev/null || { printf 'missing host network audit tool: %s\n' "$tool" >&2; exit 69; }
 done
 
 STATUS="$(smp status "$MACHINE" --json)"
-jq -e '.state == "ready" and (.process.pid | type == "number")' <<<"$STATUS" >/dev/null || {
-    printf 'machine is not ready: %s\n' "$MACHINE" >&2
+jq -e '.state == "ready" and (.process.pid | type == "number") and .network.managed == true' <<<"$STATUS" >/dev/null || {
+    printf 'machine is not a ready managed-network machine: %s\n' "$MACHINE" >&2
     exit 75
 }
+
 TAP="$(jq -er '.network.tapName' <<<"$STATUS")"
 GUEST="$(jq -er '.network.guestAddress' <<<"$STATUS")"
-PREFIX="$(jq -er '.network.prefixLength' <<<"$STATUS")"
 GATEWAY="$(jq -er '.network.gatewayAddress' <<<"$STATUS")"
+PREFIX="$(jq -er '.network.prefixLength' <<<"$STATUS")"
+SUFFIX="$(printf '%s' "$MACHINE" | sha256sum | cut -c1-10)"
+IFS=. read -r A B C _ <<<"$GATEWAY"
+SUBNET="$A.$B.$C.0/$PREFIX"
 OUTBOUND="$(ip -o route show default | awk 'NR == 1 {for (i=1; i<=NF; i++) if ($i == "dev") {print $(i+1); exit}}')"
 [[ -n $OUTBOUND ]] || { printf 'host default route has no interface\n' >&2; exit 69; }
 
-IFS=. read -r A B C _ <<<"$GATEWAY"
-SUBNET="$A.$B.$C.0/$PREFIX"
-sysctl -q -w net.ipv4.ip_forward=1
-sysctl -q -w net.ipv4.conf.all.route_localnet=1
-sysctl -q -w net.ipv4.conf.default.route_localnet=1
-sysctl -q -w net.ipv4.conf.default.rp_filter=0
-sysctl -q -w "net.ipv4.conf.${TAP}.route_localnet=1"
-sysctl -q -w "net.ipv4.conf.${TAP}.rp_filter=0"
+ip link show dev "$TAP" >/dev/null
+[[ $(cat /proc/sys/net/ipv4/ip_forward) == 1 ]] || { printf 'IPv4 forwarding is disabled\n' >&2; exit 70; }
 
-ensure_rule() {
-    local table=$1 chain=$2
-    shift 2
+check_rule() {
+    local table=$1
+    shift
     if [[ $table == filter ]]; then
-        iptables -C "$chain" "$@" >/dev/null 2>&1 || iptables -I "$chain" 1 "$@"
+        iptables -w 5 "$@"
     else
-        iptables -t "$table" -C "$chain" "$@" >/dev/null 2>&1 || iptables -t "$table" -I "$chain" 1 "$@"
+        iptables -w 5 -t "$table" "$@"
     fi
 }
 
-# Insert into the host's canonical iptables-nft chains so these rules precede
-# a distribution firewall's default drops. Local host-to-guest traffic uses
-# OUTPUT/INPUT; routed guest and published-port traffic uses FORWARD.
-ensure_rule filter OUTPUT -o "$TAP" -j ACCEPT
-ensure_rule filter INPUT -i "$TAP" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-ensure_rule filter FORWARD -i "$TAP" -j ACCEPT
-ensure_rule filter FORWARD -o "$TAP" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-ensure_rule nat POSTROUTING -s "$SUBNET" -o "$OUTBOUND" -j MASQUERADE
+check_jump() {
+    local table=$1 builtin=$2 owned=$3 label=$4
+    check_rule "$table" -C "$builtin" -m comment --comment "smp:${SUFFIX}:jump:${label}" -j "$owned"
+}
 
-# Mirror every published port into nat OUTPUT for host-local clients. External
-# clients continue to use SMP's native PREROUTING DNAT. Loopback-originated
-# traffic is SNATed to the TAP gateway so the guest has a valid return path.
+check_jump filter INPUT "SMP_I_${SUFFIX}" input
+check_jump filter OUTPUT "SMP_O_${SUFFIX}" output
+check_jump filter FORWARD "SMP_F_${SUFFIX}" forward
+check_jump nat PREROUTING "SMP_PR_${SUFFIX}" prerouting
+check_jump nat OUTPUT "SMP_NO_${SUFFIX}" output
+check_jump nat POSTROUTING "SMP_PO_${SUFFIX}" postrouting
+
+check_rule filter -C "SMP_O_${SUFFIX}" -o "$TAP" -d "$GUEST" -m comment --comment "smp:${SUFFIX}:host-output" -j ACCEPT
+check_rule filter -C "SMP_I_${SUFFIX}" -i "$TAP" -s "$GUEST" -m conntrack --ctstate ESTABLISHED,RELATED -m comment --comment "smp:${SUFFIX}:host-input" -j ACCEPT
+check_rule filter -C "SMP_F_${SUFFIX}" -i "$TAP" -s "$SUBNET" -m comment --comment "smp:${SUFFIX}:guest-forward" -j ACCEPT
+check_rule filter -C "SMP_F_${SUFFIX}" -o "$TAP" -d "$SUBNET" -m conntrack --ctstate ESTABLISHED,RELATED -m comment --comment "smp:${SUFFIX}:guest-return" -j ACCEPT
+check_rule nat -C "SMP_PO_${SUFFIX}" -s "$SUBNET" -o "$OUTBOUND" -m comment --comment "smp:${SUFFIX}:masquerade" -j MASQUERADE
+
 while IFS=$'\t' read -r protocol host_port guest_port; do
     [[ -n $protocol ]] || continue
-    ensure_rule filter FORWARD -o "$TAP" -p "$protocol" -d "$GUEST" --dport "$guest_port" -m conntrack --ctstate NEW,ESTABLISHED,RELATED -j ACCEPT
-    ensure_rule nat OUTPUT -p "$protocol" -m addrtype --dst-type LOCAL --dport "$host_port" -j DNAT --to-destination "$GUEST:$guest_port"
-    ensure_rule nat POSTROUTING -p "$protocol" -s 127.0.0.0/8 -d "$GUEST" --dport "$guest_port" -j SNAT --to-source "$GATEWAY"
+    TAG="smp:${SUFFIX}:${protocol}:${host_port}:${guest_port}"
+    DESTINATION="${GUEST}:${guest_port}"
+    check_rule filter -C "SMP_F_${SUFFIX}" -o "$TAP" -p "$protocol" -d "$GUEST" --dport "$guest_port" -m conntrack --ctstate NEW,ESTABLISHED,RELATED -m comment --comment "${TAG}:forward" -j ACCEPT
+    check_rule nat -C "SMP_PR_${SUFFIX}" -p "$protocol" --dport "$host_port" -m comment --comment "${TAG}:prerouting" -j DNAT --to-destination "$DESTINATION"
+    check_rule nat -C "SMP_NO_${SUFFIX}" -p "$protocol" -m addrtype --dst-type LOCAL --dport "$host_port" -m comment --comment "${TAG}:output" -j DNAT --to-destination "$DESTINATION"
+    check_rule nat -C "SMP_PO_${SUFFIX}" -p "$protocol" -s 127.0.0.0/8 -d "$GUEST" --dport "$guest_port" -m comment --comment "${TAG}:hairpin" -j SNAT --to-source "$GATEWAY"
 done < <(jq -r '.network.publishedPorts[]? | [.protocol, (.hostPort|tostring), (.guestPort|tostring)] | @tsv' <<<"$STATUS")
 
-printf 'Host forwarding repaired for %s via %s -> %s\n' "$MACHINE" "$TAP" "$OUTBOUND"
-
-# Prove routed IP connectivity before DNS or published-port tests run.
-for _ in $(seq 1 10); do
-    if smp exec "$MACHINE" -- ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1; then
-        printf 'Guest direct IPv4 connectivity verified\n'
-        exit 0
-    fi
-    sleep 1
-done
-printf 'guest still cannot reach 1.1.1.1 after host forwarding repair\n' >&2
-exit 70
+printf 'SMP core-owned host networking verified for %s via %s -> %s\n' "$MACHINE" "$TAP" "$OUTBOUND"
