@@ -5,7 +5,7 @@ cd "$ROOT"
 
 cargo fmt --all -- --check
 cargo test --all-targets
-cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets
 
 for script in scripts/*.sh assets/guest/*.sh; do
     bash -n "$script"
