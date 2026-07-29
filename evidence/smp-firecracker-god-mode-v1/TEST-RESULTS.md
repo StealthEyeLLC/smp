@@ -54,3 +54,43 @@ Real Firecracker acceptance has not yet been rerun for these corrections. Prompt
 The final checkpoint report supplies the single immutable recovery command after the evidence-containing commit is created and remotely verified. Firecracker `1.15.1`, Linux `6.1.177`, its configuration and module tree, and Debian `13.6` are reused when their observed canonical digests match.
 
 No Horsey, Baby, Fix, Quirt, or private StealthEye execution system was used.
+
+## Second detached recovery failure
+
+- Commit: `03ebf8eef27eddeb4fcdd804abf64be97fae0085`
+- Tree: `fe21af42d3ce22004bf573dce28c0a5e5e946aff`
+- Started: `2026-07-29T13:09:59Z`
+- Completed: `2026-07-29T13:13:05Z`
+- Result: `FAIL`
+- Exit status: `65`
+- Durable failure archive: `/var/lib/smp/results/archive/final-recovery-20260729T130959Z`
+- Failed command path: retained kernel module-tree verification in `scripts/recover-firecracker-acceptance.sh`
+- Recorded legacy module identity: `ac0f97629f17612332ebe6b469a46195dda39bf7ff0725192908886acbe59eb4`
+- Observed legacy canonical-path identity: `fc6cc176c8114a071a50f4f53665b278077a1809005024975089b036b6d6c2b8`
+- Scope: repository tests, control-plane build, atomic installation, service restart, health, and readiness passed. The run stopped before certification-machine reset and before real Firecracker acceptance.
+
+The exact cause was a path-dependent module-tree digest algorithm. The kernel-capability repair hashed regular files while the module tree was beneath a random staging directory, recorded that digest, and then moved the unchanged tree to its canonical asset path. Because the legacy digest stream included absolute filenames, relocation changed the digest without changing module contents.
+
+## Module identity correction
+
+- Correction commit: `43811279ac21f22aad3219610dcad2679f0be92a`
+- Correction tree: `490cd4526f42981e5e86b7eacbadbb36c5e22c6f`
+- Digest algorithm: `sha256-relative-regular-files-v1`
+- Asset behavior: verify both exact legacy identities, compute a relocation-invariant identity from relative paths and contents, migrate only manifest/provenance metadata, and do not rebuild Firecracker, Linux, its modules, or Debian.
+- Core behavior: SMP now verifies the normalized module tree directly when loading the asset manifest.
+
+## Clean correction gate
+
+- Rust toolchain: `1.97.1`
+- Cargo metadata with locked dependency graph: `PASS`
+- Rustfmt: `PASS`
+- Clippy, all targets with warnings denied: `PASS`
+- Rust tests: `35 passed; 0 failed`
+- Bash syntax checks: `PASS`
+- ShellCheck `0.11.0`, error severity: `PASS`
+- Plugin metadata and single-tool assertions: `PASS`
+- Network lifecycle and standalone-dependency assertions: `PASS`
+- Module digest relocation, cross-implementation vector, and content-change assertions: `PASS`
+- Clean detached checkout after the gate: `PASS`
+
+Real Firecracker acceptance remains unverified after this correction. Prompt 1 is not certified until a new detached recovery records every required PASS marker and exit status `0`.
