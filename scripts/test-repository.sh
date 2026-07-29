@@ -42,17 +42,14 @@ jq -e '
   (.properties.operation | has("enum") | not)
 ' plugin/schemas/go-request.schema.json >/dev/null
 
-private_terms=(
-  'ba''by2'
-  'ba''by-quirt'
-  'ho''rsey'
-  'qu''irt'
-  '/opt/ba''by-quirt'
-  '/var/lib/ba''by-quirt'
-  'ba''by\\.job\\.'
-  'ba''by\\.release\\.'
-)
-private_pattern="$(IFS='|'; printf '%s' "${private_terms[*]}")"
+private_pattern="$(
+  printf '%b' \
+    '\142\141\142\171\062|\142\141\142\171\055\161\165\151\162\164|\150\157\162\163\145\171|\161\165\151\162\164|'
+  printf '%b' \
+    '\057\157\160\164\057\142\141\142\171\055\161\165\151\162\164|\057\166\141\162\057\154\151\142\057\142\141\142\171\055\161\165\151\162\164|'
+  printf '%b' \
+    '\142\141\142\171\134\056\152\157\142\134\056|\142\141\142\171\134\056\162\145\154\145\141\163\145\134\056'
+)"
 if rg --line-number --ignore-case "$private_pattern" \
   src scripts assets packaging plugin config Cargo.toml build.rs rust-toolchain.toml; then
   printf 'forbidden private runtime dependency found\n' >&2
