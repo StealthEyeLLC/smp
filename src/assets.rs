@@ -49,11 +49,33 @@ pub struct KernelAsset {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DebianArchiveKeyringAsset {
+    pub version: String,
+    pub source_url: String,
+    pub package_sha256: String,
+    pub keyring_sha256: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DebianBaseFilesAsset {
+    pub version: String,
+    pub source_url: String,
+    pub package_sha256: String,
+    pub debian_version: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DebianAsset {
     pub version: String,
     pub suite: String,
     pub architecture: String,
+    pub requested_snapshot_timestamp: String,
     pub snapshot_timestamp: String,
+    pub snapshot_correction_reason: String,
+    pub archive_keyring: DebianArchiveKeyringAsset,
+    pub base_files: DebianBaseFilesAsset,
     pub repositories: Vec<String>,
     pub in_release_sha256: Vec<String>,
     pub package_list_path: String,
@@ -90,6 +112,12 @@ pub fn verify(paths: &Paths) -> Result<VerifiedAssets> {
         || manifest.kernel.version != "6.1.178"
         || manifest.debian.version != "13.6"
         || manifest.debian.suite != "trixie"
+        || manifest.debian.requested_snapshot_timestamp != "20260711T000000Z"
+        || manifest.debian.snapshot_timestamp != "20260711T103542Z"
+        || manifest.debian.snapshot_correction_reason.is_empty()
+        || manifest.debian.archive_keyring.version != "2025.1"
+        || manifest.debian.base_files.version != "13.8+deb13u6"
+        || manifest.debian.base_files.debian_version != "13.6"
     {
         return Err(SmpError::State(
             "asset manifest does not match the canonical baseline".to_owned(),
