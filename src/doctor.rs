@@ -31,7 +31,10 @@ pub fn run_doctor(paths: &RuntimePaths, fix: bool) -> Result<DoctorReport> {
     let mut changed = Vec::new();
     if fix {
         paths.ensure()?;
-        changed.push(format!("ensured SMP runtime directories beneath {}", paths.state_root.display()));
+        changed.push(format!(
+            "ensured SMP runtime directories beneath {}",
+            paths.state_root.display()
+        ));
         if !Path::new("/dev/net/tun").exists() && command_exists("modprobe") {
             if run("modprobe", &os_strings(&["tun"])).is_ok() {
                 changed.push("loaded the tun kernel module".to_owned());
@@ -57,6 +60,8 @@ pub fn run_doctor(paths: &RuntimePaths, fix: bool) -> Result<DoctorReport> {
     checks.push(kvm_check());
     checks.push(path_check("tunTap", "/dev/net/tun", true));
     checks.push(command_check("nftables", "nft"));
+    checks.push(command_check("iptables", "iptables"));
+    checks.push(command_check("iptablesSave", "iptables-save"));
     checks.push(command_check("iproute2", "ip"));
     checks.push(command_check("ssh", "ssh"));
     checks.push(command_check("scp", "scp"));
@@ -108,10 +113,15 @@ pub fn run_doctor(paths: &RuntimePaths, fix: bool) -> Result<DoctorReport> {
         name: "assets".to_owned(),
         ok: manifest.is_ok(),
         detail: manifest
-            .map(|value| format!(
-                "Firecracker {}, Linux {}, Debian {} {}",
-                value.firecracker.version, value.kernel.version, value.debian_version, value.debian_suite
-            ))
+            .map(|value| {
+                format!(
+                    "Firecracker {}, Linux {}, Debian {} {}",
+                    value.firecracker.version,
+                    value.kernel.version,
+                    value.debian_version,
+                    value.debian_suite
+                )
+            })
             .unwrap_or_else(|error| error.to_string()),
         fixable: true,
     });
@@ -119,7 +129,9 @@ pub fn run_doctor(paths: &RuntimePaths, fix: bool) -> Result<DoctorReport> {
     checks.push(service_check("smpService", "smp.service"));
     checks.push(service_check("smpTunnelService", "smp-tunnel.service"));
 
-    let healthy = checks.iter().all(|check| check.ok || check.name == "smpTunnelService");
+    let healthy = checks
+        .iter()
+        .all(|check| check.ok || check.name == "smpTunnelService");
     Ok(DoctorReport {
         healthy,
         changed,
@@ -174,9 +186,7 @@ fn command_check(name: &str, command: &str) -> DoctorCheck {
 }
 
 fn service_check(name: &str, service: &str) -> DoctorCheck {
-    let output = Command::new("systemctl")
-        .args(["is-active", service])
-        .output();
+    let output = Command::new("systemctl").args(["is-active", service]).output();
     let (ok, detail) = match output {
         Ok(output) => (
             output.status.success(),
