@@ -21,13 +21,21 @@
     "version": "13.6",
     "suite": "trixie",
     "architecture": "amd64",
-    "snapshotTimestamp": "20260711T000000Z",
-    "repository": "https://snapshot.debian.org/archive/debian/20260711T000000Z/",
-    "securityRepository": "https://snapshot.debian.org/archive/debian-security/20260711T000000Z/",
+    "requestedSnapshotTimestamp": "20260711T000000Z",
+    "snapshotTimestamp": "20260711T103542Z",
+    "snapshotCorrectionReason": "The original signed snapshot resolves base-files 13.8+deb13u5 and /etc/debian_version 13.5; the corrected signed snapshot is the first trixie InRelease containing base-files 13.8+deb13u6, whose official package supplies /etc/debian_version 13.6.",
+    "repository": "https://snapshot.debian.org/archive/debian/20260711T103542Z/",
+    "securityRepository": "https://snapshot.debian.org/archive/debian-security/20260711T103542Z/",
     "archiveKeyring": {
       "version": "2025.1",
-      "sourceUrl": "https://snapshot.debian.org/archive/debian/20260711T000000Z/pool/main/d/debian-archive-keyring/debian-archive-keyring_2025.1_all.deb",
+      "sourceUrl": "https://snapshot.debian.org/archive/debian/20260711T103542Z/pool/main/d/debian-archive-keyring/debian-archive-keyring_2025.1_all.deb",
       "packageSha256": "9ea7778e443144ca490668737a8ab22dd3e748bb99e805e22ec055abeb3c7fac"
+    },
+    "baseFiles": {
+      "version": "13.8+deb13u6",
+      "sourceUrl": "https://snapshot.debian.org/archive/debian/20260711T103542Z/pool/main/b/base-files/base-files_13.8+deb13u6_amd64.deb",
+      "packageSha256": "c4bb697554ef3e6588b38ffb73e27a22698c2b9525b1c7223b06d42d155e63fa",
+      "debianVersion": "13.6"
     }
   }
 }

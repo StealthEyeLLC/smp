@@ -13,7 +13,9 @@ readonly KERNEL_CHECKSUMS_URL="https://cdn.kernel.org/pub/linux/kernel/v6.x/sha2
 readonly DEBIAN_VERSION=13.6
 readonly DEBIAN_SUITE=trixie
 readonly DEBIAN_ARCH=amd64
-readonly DEBIAN_SNAPSHOT=20260711T000000Z
+readonly DEBIAN_ORIGINAL_SNAPSHOT=20260711T000000Z
+readonly DEBIAN_SNAPSHOT=20260711T103542Z
+readonly DEBIAN_SNAPSHOT_CORRECTION_REASON='The original signed snapshot resolves base-files 13.8+deb13u5 and /etc/debian_version 13.5; the corrected signed snapshot is the first trixie InRelease containing base-files 13.8+deb13u6, whose official package supplies /etc/debian_version 13.6.'
 readonly DEBIAN_REPOSITORY="https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/"
 readonly DEBIAN_SECURITY_REPOSITORY="https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}/"
 readonly DEBIAN_KEYRING_VERSION=2025.1
@@ -21,6 +23,11 @@ readonly DEBIAN_KEYRING_PACKAGE="debian-archive-keyring_${DEBIAN_KEYRING_VERSION
 readonly DEBIAN_KEYRING_PATH="pool/main/d/debian-archive-keyring/${DEBIAN_KEYRING_PACKAGE}"
 readonly DEBIAN_KEYRING_URL="${DEBIAN_REPOSITORY}${DEBIAN_KEYRING_PATH}"
 readonly DEBIAN_KEYRING_SHA256=9ea7778e443144ca490668737a8ab22dd3e748bb99e805e22ec055abeb3c7fac
+readonly DEBIAN_BASE_FILES_VERSION='13.8+deb13u6'
+readonly DEBIAN_BASE_FILES_PACKAGE='base-files_13.8+deb13u6_amd64.deb'
+readonly DEBIAN_BASE_FILES_PATH="pool/main/b/base-files/${DEBIAN_BASE_FILES_PACKAGE}"
+readonly DEBIAN_BASE_FILES_URL="${DEBIAN_REPOSITORY}${DEBIAN_BASE_FILES_PATH}"
+readonly DEBIAN_BASE_FILES_SHA256=c4bb697554ef3e6588b38ffb73e27a22698c2b9525b1c7223b06d42d155e63fa
 readonly ROOTFS_UUID=53504d31-0000-4000-8000-000000000001
 readonly SEED_TEMPLATE_UUID=53504d31-0000-4000-8000-000000000002
 
@@ -263,6 +270,17 @@ prepare_debian_keyring() {
   printf '%s\n' "$keyring"
 }
 
+prepare_debian_base_files_proof() {
+  local package="$CACHE/$DEBIAN_BASE_FILES_PACKAGE"
+  local extracted="$BUILD/debian-base-files-proof"
+  download_verified "$DEBIAN_BASE_FILES_URL" "$DEBIAN_BASE_FILES_SHA256" "$package"
+  [[ "$(dpkg-deb --field "$package" Version)" == "$DEBIAN_BASE_FILES_VERSION" ]]
+  safe_remove "$extracted"
+  install -d -m 0700 "$extracted"
+  dpkg-deb --extract "$package" "$extracted"
+  grep -qx "$DEBIAN_VERSION" "$extracted/etc/debian_version"
+}
+
 build_rootfs() {
   [[ -f "$PROVENANCE/kernel.json" ]]
   local root="$BUILD/rootfs-directory"
@@ -270,6 +288,7 @@ build_rootfs() {
   local keyring_digest
   keyring="$(prepare_debian_keyring)"
   keyring_digest="$(sha256sum "$keyring" | awk '{print $1}')"
+  prepare_debian_base_files_proof
   safe_remove "$root"
   install -d -m 0755 "$root"
   debootstrap \
@@ -304,7 +323,11 @@ EOF
   configure_rootfs "$root"
   local package_list="$PROVENANCE/debian-packages.txt"
   local dpkg_format="\${Package}\t\${Version}\n"
+  local version_format="\${Version}"
+  local installed_base_files_version
   chroot "$root" dpkg-query -W -f="$dpkg_format" | LC_ALL=C sort >"$package_list"
+  installed_base_files_version="$(chroot "$root" dpkg-query -W -f="$version_format" base-files)"
+  [[ "$installed_base_files_version" == "$DEBIAN_BASE_FILES_VERSION" ]]
   grep -qx "$DEBIAN_VERSION" "$root/etc/debian_version"
 
   local main_inrelease="$PROVENANCE/debian-main-InRelease"
@@ -346,13 +369,19 @@ EOF
     --arg version "$DEBIAN_VERSION" \
     --arg suite "$DEBIAN_SUITE" \
     --arg architecture "$DEBIAN_ARCH" \
+    --arg requestedSnapshotTimestamp "$DEBIAN_ORIGINAL_SNAPSHOT" \
     --arg snapshotTimestamp "$DEBIAN_SNAPSHOT" \
+    --arg snapshotCorrectionReason "$DEBIAN_SNAPSHOT_CORRECTION_REASON" \
     --arg repository "$DEBIAN_REPOSITORY" \
     --arg securityRepository "$DEBIAN_SECURITY_REPOSITORY" \
     --arg keyringVersion "$DEBIAN_KEYRING_VERSION" \
     --arg keyringUrl "$DEBIAN_KEYRING_URL" \
     --arg keyringPackageSha256 "$DEBIAN_KEYRING_SHA256" \
     --arg keyringSha256 "$keyring_digest" \
+    --arg baseFilesVersion "$DEBIAN_BASE_FILES_VERSION" \
+    --arg baseFilesUrl "$DEBIAN_BASE_FILES_URL" \
+    --arg baseFilesPackageSha256 "$DEBIAN_BASE_FILES_SHA256" \
+    --arg baseFilesDebianVersion "$DEBIAN_VERSION" \
     --arg mainInReleaseSha256 "$(sha256sum "$main_inrelease" | awk '{print $1}')" \
     --arg securityInReleaseSha256 "$(sha256sum "$security_inrelease" | awk '{print $1}')" \
     --arg packageListSha256 "$package_digest" \
@@ -368,13 +397,21 @@ EOF
       version:$version,
       suite:$suite,
       architecture:$architecture,
+      requestedSnapshotTimestamp:$requestedSnapshotTimestamp,
       snapshotTimestamp:$snapshotTimestamp,
+      snapshotCorrectionReason:$snapshotCorrectionReason,
       repositories:[$repository,$securityRepository],
       archiveKeyring:{
         version:$keyringVersion,
         sourceUrl:$keyringUrl,
         packageSha256:$keyringPackageSha256,
         keyringSha256:$keyringSha256
+      },
+      baseFiles:{
+        version:$baseFilesVersion,
+        sourceUrl:$baseFilesUrl,
+        packageSha256:$baseFilesPackageSha256,
+        debianVersion:$baseFilesDebianVersion
       },
       inReleaseSha256:[$mainInReleaseSha256,$securityInReleaseSha256],
       packageListPath:"provenance/debian-packages.txt",
