@@ -37,6 +37,14 @@ Safety systems, extensive receipts, approval workflows, policy engines, producti
 
 Any later safety implementation must govern the completed power surface without silently redefining a restricted subset as the original product.
 
+## Least-theater law
+
+**Use the least amount of theater possible, always.**
+
+Implementation begins after the smallest source-integrity check needed to avoid editing the wrong repository or commit. Established owner-confirmed infrastructure is not repeatedly re-proven. Verification happens at the point where its result changes the next action. A tool limitation is not evidence that established infrastructure is absent.
+
+For the current build, the authorized VPS and working KVM lane are accepted established facts. Prompt 1 must begin implementation through the available durable execution surface rather than searching for a special host-shell or KVM-probe operation. Fresh-tab `smp.go` verification belongs to Prompt 2.
+
 ## Standalone rule
 
 SMP is a new standalone repository. No code, architecture, schemas, scripts, services, conventions, or implementation fragments are imported from another private StealthEye repository unless the owner explicitly authorizes that exact import.
@@ -49,8 +57,11 @@ SMP may share the authorized Linux VPS with Baby while remaining standalone. It 
 
 1. [SMP Constitution](docs/00-SMP-CONSTITUTION.md) — binding project laws, definitions, constraints, and decision rules.
 2. [Firecracker God-Mode Base](docs/01-FIRECRACKER-GOD-MODE-BASE.md) — exact first-product contract, Firecracker baseline, lifecycle semantics, and standalone ChatGPT control.
-3. [Build and Acceptance Order](docs/02-BUILD-AND-ACCEPTANCE-ORDER.md) — the single remaining implementation mission, execution order, and real-host completion gates.
+3. [Build and Acceptance Order](docs/02-BUILD-AND-ACCEPTANCE-ORDER.md) — implementation order and capability acceptance.
 4. [Standalone Integrations and Operations](docs/03-STANDALONE-INTEGRATIONS-AND-OPERATIONS.md) — the `SMP` plugin, dedicated VPS connection, GitHub App role, service layout, credentials, upgrade behavior, and independence tests.
+5. [Least-Theater Execution Law](docs/04-LEAST-THEATER-LAW.md) — constitutional amendment requiring immediate execution, point-of-use verification, and minimal ceremony.
+
+Document 5 overrides conflicting preflight, verification, evidence, and prompt language in documents 1 through 4.
 
 ## Local use
 
@@ -96,7 +107,7 @@ The existing GitHub App installation for `StealthEyeLLC` was verified on 2026-07
 
 That GitHub App is authorized development and repository-management infrastructure. It may be used to inspect, commit, branch, review, and remotely verify SMP according to its current permissions. It is not part of the installed SMP runtime and must not be required to start or operate microVMs.
 
-Actual repository access must be re-verified before each implementation mission because installation scope and permissions can change. GitHub App private keys and tokens must never be committed, embedded in a guest image, placed in the seed disk, or exposed through `smp.go`.
+Check the repository, source commit, clean state, and usable write path once at mission start. Recheck access only when an actual repository operation fails or current evidence indicates access changed. GitHub App private keys and tokens must never be committed, embedded in a guest image, placed in the seed disk, or exposed through `smp.go`.
 
 ## Reboot truth
 
@@ -104,4 +115,4 @@ Firecracker does not provide a general in-place guest reboot contract. On the ca
 
 ## Project status
 
-The canonical specification is complete across the four documents above. No implementation has been certified yet. One implementation mission remains: build, test on the real authorized KVM host, correct failures, certify local SMP and the private `SMP` plugin with its single `smp.go` tool, commit, and remotely verify the finished result.
+The canonical specification is complete across the five documents above. Implementation is split into two honest prompts: Prompt 1 builds SMP immediately through the available durable execution surface and prepares the dedicated tunnel and plugin; Prompt 2 runs in a fresh tab and verifies the actual `smp.go` integration end to end.
