@@ -48,7 +48,7 @@ install -d -m 0700 /var/lib/smp /var/lib/smp/toolchain /var/lib/smp/toolchain/ca
 export CARGO_HOME=/var/lib/smp/toolchain/cargo
 export RUSTUP_HOME=/var/lib/smp/toolchain/rustup
 export RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN"
-rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
+rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
 RUSTC_VERSION="$(rustup run "$RUST_TOOLCHAIN" rustc --version)"
 CARGO_VERSION="$(rustup run "$RUST_TOOLCHAIN" cargo --version)"
 [[ $RUSTC_VERSION == "rustc ${RUST_TOOLCHAIN} "* ]] || { printf 'unexpected Rust compiler: %s\n' "$RUSTC_VERSION" >&2; exit 69; }
