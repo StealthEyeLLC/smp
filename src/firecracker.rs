@@ -53,10 +53,27 @@ pub fn generate_config(record: &MachineRecord) -> Result<Value> {
         }));
     }
 
-    Ok(json!({
+    let mut boot_args = record.boot_args.clone();
+    match record.transport {
+        VirtioTransport::Pci => {
+            if !boot_args.split_whitespace().any(|value| value.starts_with("pci=")) {
+                boot_args.push_str(" pci=on");
+            }
+        }
+        VirtioTransport::Mmio => {
+            boot_args = boot_args
+                .split_whitespace()
+                .filter(|value| !value.starts_with("pci="))
+                .collect::<Vec<_>>()
+                .join(" ");
+            boot_args.push_str(" pci=off");
+        }
+    }
+
+    let mut config = json!({
         "boot-source": {
             "kernel_image_path": record.kernel.path,
-            "boot_args": record.boot_args
+            "boot_args": boot_args
         },
         "drives": drives,
         "machine-config": {
@@ -71,7 +88,14 @@ pub fn generate_config(record: &MachineRecord) -> Result<Value> {
             "guest_mac": record.network.guest_mac
         }],
         "entropy": {}
-    }))
+    });
+    let object = config
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("generated Firecracker config is not an object"))?;
+    for (key, value) in &record.raw {
+        object.insert(key.clone(), value.clone());
+    }
+    Ok(config)
 }
 
 pub fn write_config(record: &MachineRecord) -> Result<()> {
@@ -261,7 +285,11 @@ pub fn api_request(
         body.len()
     )?;
     for (name, value) in headers {
-        if name.contains(['\r', '\n']) || value.contains(['\r', '\n']) {
+        if name.contains('\r')
+            || name.contains('\n')
+            || value.contains('\r')
+            || value.contains('\n')
+        {
             bail!("invalid Firecracker API header");
         }
         write!(stream, "{name}: {value}\r\n")?;
@@ -382,5 +410,16 @@ mod tests {
             config["drives"][0]["path_on_host"],
             "/machine/root.ext4"
         );
+    }
+
+    #[test]
+    fn mmio_forces_pci_off() {
+        let mut machine = record();
+        machine.transport = VirtioTransport::Mmio;
+        let config = generate_config(&machine).unwrap();
+        assert!(config["boot-source"]["boot_args"]
+            .as_str()
+            .unwrap()
+            .contains("pci=off"));
     }
 }
