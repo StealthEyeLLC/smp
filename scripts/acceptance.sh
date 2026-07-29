@@ -39,6 +39,8 @@ cleanup_machine() {
 cleanup_publish() {
     if [[ -n $PUBLISH_UNIT ]]; then
         smp exec "$PRIMARY" -- systemctl stop "${PUBLISH_UNIT}.service" >/dev/null 2>&1 || true
+        smp exec "$PRIMARY" -- rm -f "/etc/systemd/system/${PUBLISH_UNIT}.service" >/dev/null 2>&1 || true
+        smp exec "$PRIMARY" -- systemctl daemon-reload >/dev/null 2>&1 || true
         PUBLISH_UNIT=
     fi
 }
@@ -152,7 +154,11 @@ EOF_C
 gcc -O2 -o /root/native /root/native.c; test "$(/root/native)" = native-ok'
 
 stage 'Published port and exact argv behavior'
-smp exec "$PRIMARY" -- bash -lc 'pkill -x nc >/dev/null 2>&1 || true; pkill -x smp-http >/dev/null 2>&1 || true; cat >/root/smp-http.c <<EOF_HTTP
+PUBLISH_UNIT=smp-publish-acceptance
+smp exec "$PRIMARY" -- systemctl stop "${PUBLISH_UNIT}.service" >/dev/null 2>&1 || true
+smp exec "$PRIMARY" -- rm -f "/etc/systemd/system/${PUBLISH_UNIT}.service" >/dev/null 2>&1 || true
+smp exec "$PRIMARY" -- systemctl daemon-reload
+smp exec "$PRIMARY" -- bash -lc 'cat >/root/smp-http.c <<EOF_HTTP
 #include <arpa/inet.h>
 #include <errno.h>
 #include <signal.h>
@@ -192,9 +198,20 @@ int main(void) {
     }
 }
 EOF_HTTP
-gcc -O2 -Wall -Wextra -Werror -o /root/smp-http /root/smp-http.c'
-PUBLISH_UNIT="smp-publish-acceptance-$$"
-smp exec "$PRIMARY" -- systemd-run --quiet --collect --unit "$PUBLISH_UNIT" --property Restart=always /root/smp-http
+gcc -O2 -Wall -Wextra -Werror -o /root/smp-http /root/smp-http.c
+cat >/etc/systemd/system/smp-publish-acceptance.service <<EOF_UNIT
+[Unit]
+Description=SMP published-port acceptance listener
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/root/smp-http
+Restart=always
+RestartSec=1
+EOF_UNIT
+systemctl daemon-reload
+systemctl start smp-publish-acceptance.service'
 smp exec "$PRIMARY" -- systemctl is-active --quiet "${PUBLISH_UNIT}.service"
 
 GUEST_HTTP=
