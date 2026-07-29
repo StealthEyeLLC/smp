@@ -4,6 +4,7 @@ umask 077
 
 INSTALL=/etc/smp/install.json
 ASSETS=/var/lib/smp/assets/manifest.json
+ACCEPTANCE=/var/lib/smp/results/acceptance/result.json
 [[ -r $INSTALL ]] || { printf 'SMP install metadata is missing: %s\n' "$INSTALL" >&2; exit 66; }
 [[ -x /usr/local/bin/smp ]] || { printf 'SMP binary is not installed\n' >&2; exit 66; }
 
@@ -23,6 +24,22 @@ else
     ROOTFS=null
 fi
 
+if [[ -r $ACCEPTANCE ]]; then
+    ACCEPTANCE_JSON="$(jq -c . "$ACCEPTANCE")"
+    ACCEPTANCE_RESULT="$(jq -r .result "$ACCEPTANCE")"
+else
+    ACCEPTANCE_JSON=null
+    ACCEPTANCE_RESULT=NOT_RUN
+fi
+
+if [[ $ACCEPTANCE_RESULT == PASS ]]; then
+    RESULT=PROMPT_2_CERTIFIED
+    NEXT_ACTION='Enable the private SMP custom MCP connection, then use a fresh ChatGPT tab with Prompt 2.'
+else
+    RESULT=PROMPT_2_BOOTSTRAPPED
+    NEXT_ACTION='Complete real Firecracker acceptance before enabling the private SMP custom MCP connection.'
+fi
+
 SMP_STATUS="$(systemctl is-active smp.service 2>/dev/null || true)"
 TUNNEL_STATUS="$(systemctl is-active smp-tunnel.service 2>/dev/null || true)"
 TUNNEL_IDENTITY="$(systemctl show smp-tunnel.service -p FragmentPath -p MainPID -p ActiveState --value 2>/dev/null | paste -sd, - || true)"
@@ -30,7 +47,7 @@ MACHINES="$(/usr/local/bin/smp --json describe --machines 2>/dev/null | jq -c .m
 OPERATIONS="$(/usr/local/bin/smp --json describe 2>/dev/null | jq -c '[.operations[].name]' || printf '[]')"
 
 jq -n \
-  --arg result "PROMPT_2_BOOTSTRAPPED" \
+  --arg result "$RESULT" \
   --arg repository "StealthEyeLLC/smp" \
   --arg branch "build/smp-firecracker-god-mode-v1" \
   --arg commit "$COMMIT" \
@@ -42,9 +59,11 @@ jq -n \
   --arg smpService "$SMP_STATUS" \
   --arg tunnelService "$TUNNEL_STATUS" \
   --arg tunnelIdentity "$TUNNEL_IDENTITY" \
+  --arg nextAction "$NEXT_ACTION" \
   --argjson firecracker "$FIRECRACKER" \
   --argjson kernel "$KERNEL" \
   --argjson rootfs "$ROOTFS" \
+  --argjson acceptance "$ACCEPTANCE_JSON" \
   --argjson operations "$OPERATIONS" \
   --argjson machines "$MACHINES" \
   '{result:$result,repository:$repository,branch:$branch,commit:$commit,
@@ -53,8 +72,8 @@ jq -n \
     localMcpEndpoint:$localMcpEndpoint,pluginDisplayName:$pluginDisplayName,
     onlyCallableTool:$callableIdentity,smpServiceStatus:$smpService,
     tunnelServiceStatus:$tunnelService,tunnelIdentityWithoutSecret:$tunnelIdentity,
-    firecracker:$firecracker,kernel:$kernel,rootfs:$rootfs,
+    firecracker:$firecracker,kernel:$kernel,rootfs:$rootfs,acceptance:$acceptance,
     operations:$operations,machines:$machines,
     limits:{inlineOutputBytes:1048576,capturedOutputBytes:67108864,
       maximumTimeoutSeconds:86400,requestRetentionSeconds:604800,resultRetentionSeconds:604800},
-    nextAction:"Use a fresh ChatGPT tab with Prompt 2 after the private SMP custom MCP connection is enabled."}'
+    nextAction:$nextAction}'
