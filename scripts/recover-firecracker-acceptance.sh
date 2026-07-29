@@ -22,20 +22,27 @@ install -m 0755 "$SOURCE_ROOT/scripts/prompt2-handoff.sh" /usr/lib/smp/prompt2-h
 install -m 0755 "$SOURCE_ROOT/assets/guest/smp-seed-init.sh" /usr/lib/smp/assets/guest/smp-seed-init.sh
 install -m 0644 "$SOURCE_ROOT/assets/guest/smp-seed-init.service" /usr/lib/smp/assets/guest/smp-seed-init.service
 
-printf 'Removing failed certification machines and runtime state\n'
-for machine in smp-cert-disposable smp-cert-no-fallback smp-cert-isolated smp-cert-persistent; do
-    /usr/local/bin/smp destroy "$machine" --force >/dev/null 2>&1 || true
-done
-
-printf 'Repairing only the canonical guest initializer in the existing rootfs\n'
-/usr/lib/smp/repair-rootfs.sh \
-  --assets-root /var/lib/smp/assets \
-  --source-root /usr/lib/smp/assets \
-  --build-commit "$EXPECTED_COMMIT"
-
 rm -f /var/lib/smp/results/acceptance/result.json
-printf 'Running complete real Firecracker acceptance\n'
-/usr/lib/smp/acceptance.sh
+PRIMARY_STATUS="$(/usr/local/bin/smp status smp-cert-persistent --json 2>/dev/null || true)"
+if jq -e '.state == "ready" and (.process.pid | type == "number")' <<<"$PRIMARY_STATUS" >/dev/null 2>&1; then
+    printf 'Resuming acceptance from the existing ready persistent VM\n'
+    /usr/lib/smp/acceptance.sh --resume-primary
+else
+    printf 'Removing failed certification machines and runtime state\n'
+    for machine in smp-cert-disposable smp-cert-no-fallback smp-cert-isolated smp-cert-persistent; do
+        /usr/local/bin/smp destroy "$machine" --force >/dev/null 2>&1 || true
+    done
+
+    printf 'Repairing only the canonical guest initializer in the existing rootfs\n'
+    /usr/lib/smp/repair-rootfs.sh \
+      --assets-root /var/lib/smp/assets \
+      --source-root /usr/lib/smp/assets \
+      --build-commit "$EXPECTED_COMMIT"
+
+    printf 'Running complete real Firecracker acceptance\n'
+    /usr/lib/smp/acceptance.sh
+fi
+
 jq -e '.result == "PASS"' /var/lib/smp/results/acceptance/result.json >/dev/null
 systemctl is-active --quiet smp.service
 curl --fail --silent --show-error http://127.0.0.1:7745/healthz >/dev/null
