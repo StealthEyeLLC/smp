@@ -118,6 +118,7 @@ impl MachineLock {
         let path = paths.locks_root().join(format!("{name}.lock"));
         let file = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(&path)?;

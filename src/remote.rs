@@ -1,6 +1,5 @@
 use crate::core::{self, CreateOptions};
 use crate::doctor;
-use crate::firecracker;
 use crate::guest;
 use crate::model::{
     GoRequest, GoResponse, MachineMode, OperationSchema, ProcessIdentity, PublishedPort,
@@ -22,9 +21,7 @@ use base64::Engine;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::fs::{self, OpenOptions};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -99,6 +96,7 @@ fn handle_go_inner(paths: &RuntimePaths, request: GoRequest) -> Result<GoRespons
     }
     let lock = OpenOptions::new()
         .create(true)
+        .truncate(false)
         .read(true)
         .write(true)
         .open(lock_path)?;
@@ -963,6 +961,7 @@ fn apply_path_environment(command: &mut Command, paths: &RuntimePaths) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     fn request() -> GoRequest {
         GoRequest {

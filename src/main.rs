@@ -8,7 +8,7 @@ use smp::core::{self, CreateOptions};
 use smp::model::{MachineMode, PublishedPort, VirtioTransport, BUILD_COMMIT, SMP_VERSION};
 use smp::remote;
 use smp::server;
-use smp::state::{list_machines, RuntimePaths};
+use smp::state::RuntimePaths;
 use std::path::PathBuf;
 use std::time::Duration;
 

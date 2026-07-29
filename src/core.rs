@@ -114,9 +114,9 @@ pub fn create(paths: &RuntimePaths, options: &CreateOptions) -> Result<MachineRe
         schema_version: MACHINE_SCHEMA_VERSION,
         name: options.name.clone(),
         architecture: "x86_64".to_owned(),
-        mode: options.mode.clone(),
+        mode: options.mode,
         state: MachineState::Created,
-        transport: options.transport.clone(),
+        transport: options.transport,
         vcpu_count: options.vcpu_count,
         memory_mib: options.memory_mib,
         boot_args: options
@@ -279,7 +279,7 @@ pub fn reconcile(paths: &RuntimePaths, name: &str) -> Result<MachineRecord> {
 }
 
 fn reconcile_locked(paths: &RuntimePaths, record: &mut MachineRecord) -> Result<()> {
-    let prior = record.state.clone();
+    let prior = record.state;
     match &record.process {
         Some(identity) if firecracker::verify_process(identity)? => {
             record.state = if guest::wait_for_ssh(record, Duration::from_millis(600)).is_ok() {

@@ -35,10 +35,11 @@ pub fn run_doctor(paths: &RuntimePaths, fix: bool) -> Result<DoctorReport> {
             "ensured SMP runtime directories beneath {}",
             paths.state_root.display()
         ));
-        if !Path::new("/dev/net/tun").exists() && command_exists("modprobe") {
-            if run("modprobe", &os_strings(&["tun"])).is_ok() {
-                changed.push("loaded the tun kernel module".to_owned());
-            }
+        if !Path::new("/dev/net/tun").exists()
+            && command_exists("modprobe")
+            && run("modprobe", &os_strings(&["tun"])).is_ok()
+        {
+            changed.push("loaded the tun kernel module".to_owned());
         }
         let forwarding = fs::read_to_string("/proc/sys/net/ipv4/ip_forward").unwrap_or_default();
         if forwarding.trim() != "1" {
