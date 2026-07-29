@@ -239,6 +239,13 @@ pub fn plan(machine: &str, definition: &NetworkDefinition) -> Result<NetworkPlan
             apply.push(command);
         }
     }
+    for command in &mut apply {
+        if let Some(index) = command.iter().position(|value| value == "comment")
+            && let Some(value) = command.get_mut(index + 1)
+        {
+            *value = nft_comment(value);
+        }
+    }
     let cleanup = vec![
         nft_delete_chain(&output),
         nft_delete_chain(&prerouting),
@@ -364,6 +371,11 @@ fn chain_suffix(machine: &str) -> String {
     hex::encode(digest)[..10].to_owned()
 }
 
+fn nft_comment(value: &str) -> String {
+    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
+}
+
 fn nft_chain(name: &str, kind: &str, hook: &str, priority: &str) -> Vec<String> {
     vec![
         "nft".into(),
@@ -427,7 +439,7 @@ fn nft_chain_has_comment(chain: &str, comment: &str) -> Result<bool> {
         chain,
     ]))?;
     Ok(output.status.success()
-        && String::from_utf8_lossy(&output.stdout).contains(&format!("comment \"{comment}\"")))
+        && String::from_utf8_lossy(&output.stdout).contains(&format!("comment {comment}")))
 }
 
 fn link_alias(tap: &str) -> Result<Option<String>> {
@@ -551,6 +563,22 @@ mod tests {
         assert!(rendered.contains("127.0.0.0/8"));
         assert!(rendered.contains("dnat"));
         assert!(rendered.contains("smp:default"));
+        let comments = plan
+            .apply_commands
+            .iter()
+            .filter_map(|command| {
+                command
+                    .iter()
+                    .position(|value| value == "comment")
+                    .and_then(|index| command.get(index + 1))
+            })
+            .collect::<Vec<_>>();
+        assert!(!comments.is_empty());
+        assert!(
+            comments
+                .iter()
+                .all(|value| value.starts_with('"') && value.ends_with('"'))
+        );
         assert_eq!(
             plan.cleanup_commands.last().and_then(|value| value.last()),
             Some(&definition.tap)
