@@ -43,11 +43,13 @@ mkdir -p "$ASSETS_ROOT/downloads" "$ASSETS_ROOT/firecracker" "$ASSETS_ROOT/kerne
 WORK="$(mktemp -d "$ASSETS_ROOT/.build.XXXXXX")"
 ROOT_MOUNTED=0
 DEV_MOUNTED=0
+DEVPTS_MOUNTED=0
 PROC_MOUNTED=0
 SYS_MOUNTED=0
 cleanup() {
     if [[ $SYS_MOUNTED -eq 1 ]]; then umount "$WORK/root/sys" >/dev/null 2>&1 || true; fi
     if [[ $PROC_MOUNTED -eq 1 ]]; then umount "$WORK/root/proc" >/dev/null 2>&1 || true; fi
+    if [[ $DEVPTS_MOUNTED -eq 1 ]]; then umount "$WORK/root/dev/pts" >/dev/null 2>&1 || true; fi
     if [[ $DEV_MOUNTED -eq 1 ]]; then umount "$WORK/root/dev" >/dev/null 2>&1 || true; fi
     if [[ $ROOT_MOUNTED -eq 1 ]]; then umount "$WORK/root" >/dev/null 2>&1 || true; fi
     rm -rf "$WORK"
@@ -62,10 +64,16 @@ download() {
     mv "$destination.part" "$destination"
 }
 
+hash_tree() {
+    local directory=$1
+    find "$directory" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1
+}
+
 printf 'Preparing pinned Firecracker %s\n' "$FIRECRACKER_VERSION"
 FC_ARCHIVE="firecracker-v${FIRECRACKER_VERSION}-${ARCH}.tgz"
 FC_URL="https://github.com/firecracker-microvm/firecracker/releases/download/v${FIRECRACKER_VERSION}/${FC_ARCHIVE}"
 FC_SUM_URL="${FC_URL}.sha256.txt"
+FC_BINARY="$ASSETS_ROOT/firecracker/firecracker-v${FIRECRACKER_VERSION}-${ARCH}"
 download "$FC_URL" "$ASSETS_ROOT/downloads/$FC_ARCHIVE"
 download "$FC_SUM_URL" "$ASSETS_ROOT/downloads/$FC_ARCHIVE.sha256.txt"
 (
@@ -76,50 +84,74 @@ mkdir -p "$WORK/firecracker"
 tar -xzf "$ASSETS_ROOT/downloads/$FC_ARCHIVE" -C "$WORK/firecracker"
 FC_SOURCE="$(find "$WORK/firecracker" -type f -name "firecracker-v${FIRECRACKER_VERSION}-${ARCH}" -print -quit)"
 [[ -n "$FC_SOURCE" ]] || { printf 'Firecracker binary absent from official archive\n' >&2; exit 65; }
-install -m 0755 "$FC_SOURCE" "$ASSETS_ROOT/firecracker/firecracker-v${FIRECRACKER_VERSION}-${ARCH}"
+install -m 0755 "$FC_SOURCE" "$FC_BINARY"
 FC_ARCHIVE_SHA="$(sha256sum "$ASSETS_ROOT/downloads/$FC_ARCHIVE" | cut -d' ' -f1)"
-FC_BINARY_SHA="$(sha256sum "$ASSETS_ROOT/firecracker/firecracker-v${FIRECRACKER_VERSION}-${ARCH}" | cut -d' ' -f1)"
+FC_BINARY_SHA="$(sha256sum "$FC_BINARY" | cut -d' ' -f1)"
 printf '%s  %s\n' "$FC_ARCHIVE_SHA" "$FC_ARCHIVE" > "$ASSETS_ROOT/provenance/firecracker-archive.sha256"
 printf '%s  %s\n' "$FC_BINARY_SHA" "firecracker-v${FIRECRACKER_VERSION}-${ARCH}" > "$ASSETS_ROOT/provenance/firecracker-binary.sha256"
 
-printf 'Building pinned Linux %s vmlinux and modules\n' "$KERNEL_VERSION"
 KERNEL_ARCHIVE="linux-${KERNEL_VERSION}.tar.xz"
 KERNEL_URL="https://cdn.kernel.org/pub/linux/kernel/v6.x/${KERNEL_ARCHIVE}"
 KERNEL_SUMS_URL="https://cdn.kernel.org/pub/linux/kernel/v6.x/sha256sums.asc"
+KERNEL_IMAGE="$ASSETS_ROOT/kernel/vmlinux-${KERNEL_VERSION}"
+KERNEL_MODULES="$ASSETS_ROOT/kernel/modules-${KERNEL_VERSION}"
+KERNEL_CONFIG_PROVENANCE="$ASSETS_ROOT/provenance/kernel-config.sha256"
+VMLINUX_PROVENANCE="$ASSETS_ROOT/provenance/vmlinux.sha256"
+MODULE_PROVENANCE="$ASSETS_ROOT/provenance/module-tree.sha256"
 download "$KERNEL_URL" "$ASSETS_ROOT/downloads/$KERNEL_ARCHIVE"
 download "$KERNEL_SUMS_URL" "$ASSETS_ROOT/downloads/kernel-sha256sums.asc"
 KERNEL_EXPECTED="$(awk -v file="$KERNEL_ARCHIVE" '$2 == file {print $1; exit}' "$ASSETS_ROOT/downloads/kernel-sha256sums.asc")"
 [[ "$KERNEL_EXPECTED" =~ ^[0-9a-f]{64}$ ]] || { printf 'kernel checksum not found in official checksum file\n' >&2; exit 65; }
 printf '%s  %s\n' "$KERNEL_EXPECTED" "$ASSETS_ROOT/downloads/$KERNEL_ARCHIVE" | sha256sum --check --strict -
-tar -xJf "$ASSETS_ROOT/downloads/$KERNEL_ARCHIVE" -C "$WORK"
-KERNEL_SOURCE="$WORK/linux-$KERNEL_VERSION"
-pushd "$KERNEL_SOURCE" >/dev/null
-make x86_64_defconfig
-for setting in \
-    MODULES BLK_DEV_LOOP EXT4_FS DEVTMPFS DEVTMPFS_MOUNT TMPFS POSIX_MQUEUE \
-    NAMESPACES UTS_NS IPC_NS USER_NS PID_NS NET_NS CGROUPS CGROUP_BPF CGROUP_SCHED \
-    OVERLAY_FS NETFILTER NF_TABLES NFT_CT NFT_NAT NFT_MASQ NFT_REDIR NFT_REJECT \
-    TUN VETH BRIDGE BRIDGE_NETFILTER INET IP_ADVANCED_ROUTER IP_MULTIPLE_TABLES \
-    VIRTIO VIRTIO_PCI VIRTIO_PCI_LEGACY VIRTIO_BLK VIRTIO_NET VIRTIO_CONSOLE \
-    HW_RANDOM HW_RANDOM_VIRTIO VSOCKETS VIRTIO_VSOCKETS VIRTIO_VSOCKETS_COMMON \
-    SERIAL_8250 SERIAL_8250_CONSOLE UNIX PACKET INET IPV6 SECCOMP SECCOMP_FILTER \
-    BPF_SYSCALL KPROBES FTRACE DEBUG_FS; do
-    scripts/config --enable "CONFIG_${setting}"
-done
-scripts/config --disable CONFIG_MODULE_SIG_ALL
-make olddefconfig
-KERNEL_CONFIG_SHA="$(sha256sum .config | cut -d' ' -f1)"
-make -j"$(nproc)" vmlinux modules
-make modules_install INSTALL_MOD_PATH="$WORK/modules"
-install -m 0644 vmlinux "$ASSETS_ROOT/kernel/vmlinux-${KERNEL_VERSION}"
-popd >/dev/null
-rm -rf "$ASSETS_ROOT/kernel/modules-${KERNEL_VERSION}"
-mv "$WORK/modules/lib/modules" "$ASSETS_ROOT/kernel/modules-${KERNEL_VERSION}"
-VMLINUX_SHA="$(sha256sum "$ASSETS_ROOT/kernel/vmlinux-${KERNEL_VERSION}" | cut -d' ' -f1)"
-MODULE_TREE_SHA="$(find "$ASSETS_ROOT/kernel/modules-${KERNEL_VERSION}" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
-printf '%s  .config\n' "$KERNEL_CONFIG_SHA" > "$ASSETS_ROOT/provenance/kernel-config.sha256"
-printf '%s  vmlinux-%s\n' "$VMLINUX_SHA" "$KERNEL_VERSION" > "$ASSETS_ROOT/provenance/vmlinux.sha256"
-printf '%s  modules-%s\n' "$MODULE_TREE_SHA" "$KERNEL_VERSION" > "$ASSETS_ROOT/provenance/module-tree.sha256"
+
+REUSE_KERNEL=0
+if [[ -f $KERNEL_IMAGE && -d $KERNEL_MODULES && -s $KERNEL_CONFIG_PROVENANCE && -s $VMLINUX_PROVENANCE && -s $MODULE_PROVENANCE ]]; then
+    KERNEL_CONFIG_SHA="$(awk 'NR == 1 {print $1}' "$KERNEL_CONFIG_PROVENANCE")"
+    RECORDED_VMLINUX_SHA="$(awk 'NR == 1 {print $1}' "$VMLINUX_PROVENANCE")"
+    RECORDED_MODULE_TREE_SHA="$(awk 'NR == 1 {print $1}' "$MODULE_PROVENANCE")"
+    if [[ $KERNEL_CONFIG_SHA =~ ^[0-9a-f]{64}$ && $RECORDED_VMLINUX_SHA =~ ^[0-9a-f]{64}$ && $RECORDED_MODULE_TREE_SHA =~ ^[0-9a-f]{64}$ ]]; then
+        VMLINUX_SHA="$(sha256sum "$KERNEL_IMAGE" | cut -d' ' -f1)"
+        MODULE_TREE_SHA="$(hash_tree "$KERNEL_MODULES")"
+        if [[ $VMLINUX_SHA == "$RECORDED_VMLINUX_SHA" && $MODULE_TREE_SHA == "$RECORDED_MODULE_TREE_SHA" ]]; then
+            REUSE_KERNEL=1
+        fi
+    fi
+fi
+
+if [[ $REUSE_KERNEL -eq 1 ]]; then
+    printf 'Reusing verified Linux %s vmlinux and modules\n' "$KERNEL_VERSION"
+else
+    printf 'Building pinned Linux %s vmlinux and modules\n' "$KERNEL_VERSION"
+    tar -xJf "$ASSETS_ROOT/downloads/$KERNEL_ARCHIVE" -C "$WORK"
+    KERNEL_SOURCE="$WORK/linux-$KERNEL_VERSION"
+    pushd "$KERNEL_SOURCE" >/dev/null
+    make x86_64_defconfig
+    for setting in \
+        MODULES BLK_DEV_LOOP EXT4_FS DEVTMPFS DEVTMPFS_MOUNT TMPFS POSIX_MQUEUE \
+        NAMESPACES UTS_NS IPC_NS USER_NS PID_NS NET_NS CGROUPS CGROUP_BPF CGROUP_SCHED \
+        OVERLAY_FS NETFILTER NF_TABLES NFT_CT NFT_NAT NFT_MASQ NFT_REDIR NFT_REJECT \
+        TUN VETH BRIDGE BRIDGE_NETFILTER INET IP_ADVANCED_ROUTER IP_MULTIPLE_TABLES \
+        VIRTIO VIRTIO_PCI VIRTIO_PCI_LEGACY VIRTIO_BLK VIRTIO_NET VIRTIO_CONSOLE \
+        HW_RANDOM HW_RANDOM_VIRTIO VSOCKETS VIRTIO_VSOCKETS VIRTIO_VSOCKETS_COMMON \
+        SERIAL_8250 SERIAL_8250_CONSOLE UNIX PACKET INET IPV6 SECCOMP SECCOMP_FILTER \
+        BPF_SYSCALL KPROBES FTRACE DEBUG_FS; do
+        scripts/config --enable "CONFIG_${setting}"
+    done
+    scripts/config --disable CONFIG_MODULE_SIG_ALL
+    make olddefconfig
+    KERNEL_CONFIG_SHA="$(sha256sum .config | cut -d' ' -f1)"
+    make -j"$(nproc)" vmlinux modules
+    make modules_install INSTALL_MOD_PATH="$WORK/modules"
+    install -m 0644 vmlinux "$KERNEL_IMAGE"
+    popd >/dev/null
+    rm -rf "$KERNEL_MODULES"
+    mv "$WORK/modules/lib/modules" "$KERNEL_MODULES"
+    VMLINUX_SHA="$(sha256sum "$KERNEL_IMAGE" | cut -d' ' -f1)"
+    MODULE_TREE_SHA="$(hash_tree "$KERNEL_MODULES")"
+    printf '%s  .config\n' "$KERNEL_CONFIG_SHA" > "$KERNEL_CONFIG_PROVENANCE"
+    printf '%s  vmlinux-%s\n' "$VMLINUX_SHA" "$KERNEL_VERSION" > "$VMLINUX_PROVENANCE"
+    printf '%s  modules-%s\n' "$MODULE_TREE_SHA" "$KERNEL_VERSION" > "$MODULE_PROVENANCE"
+fi
 
 printf 'Building Debian %s %s ext4 root filesystem\n' "$DEBIAN_VERSION" "$DEBIAN_SUITE"
 ROOTFS_NEW="$ASSETS_ROOT/rootfs/debian-${DEBIAN_VERSION}-${DEBIAN_SUITE}-amd64.ext4.new"
@@ -137,6 +169,8 @@ deb $SECURITY_MIRROR ${DEBIAN_SUITE}-security main
 SOURCES
 cp /etc/resolv.conf "$WORK/root/etc/resolv.conf"
 mount --bind /dev "$WORK/root/dev"; DEV_MOUNTED=1
+mkdir -p "$WORK/root/dev/pts"
+mount -t devpts devpts "$WORK/root/dev/pts"; DEVPTS_MOUNTED=1
 mount -t proc proc "$WORK/root/proc"; PROC_MOUNTED=1
 mount -t sysfs sys "$WORK/root/sys"; SYS_MOUNTED=1
 chroot "$WORK/root" /bin/bash -eux <<'CHROOT'
@@ -144,7 +178,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get -y full-upgrade
 apt-get install -y --no-install-recommends \
-  systemd-sysv dbus openssh-server nftables iproute2 iputils-ping dnsutils \
+  systemd-sysv systemd-resolved dbus openssh-server nftables iproute2 iputils-ping dnsutils \
   ca-certificates curl e2fsprogs util-linux kmod procps bash coreutils findutils \
   grep sed gawk tar gzip xz-utils gcc make libc6-dev pkg-config git mount rsync \
   bridge-utils netcat-openbsd file less vim-tiny
@@ -175,7 +209,7 @@ chroot "$WORK/root" gcc -O2 -Wall -Wextra -Werror -o /usr/local/libexec/smp-file
 rm -f "$WORK/root/tmp/smp-exec-hex.c" "$WORK/root/tmp/smp-file-hex.c"
 ln "$WORK/root/usr/local/libexec/smp-file-hex" "$WORK/root/usr/local/libexec/smp-file-write-hex"
 ln "$WORK/root/usr/local/libexec/smp-file-hex" "$WORK/root/usr/local/libexec/smp-file-read-hex"
-rsync -aH "$ASSETS_ROOT/kernel/modules-${KERNEL_VERSION}/" "$WORK/root/lib/modules/"
+rsync -aH "$KERNEL_MODULES/" "$WORK/root/lib/modules/"
 printf '%s\n' "$DEBIAN_VERSION" > "$WORK/root/etc/smp-debian-version"
 chroot "$WORK/root" dpkg-query -W -f='${Package}\t${Version}\n' | LC_ALL=C sort > "$ASSETS_ROOT/provenance/debian-packages.tsv"
 [[ "$(cat "$WORK/root/etc/debian_version")" == "$DEBIAN_VERSION"* ]] || {
@@ -190,6 +224,7 @@ INRELEASE_SHA="$(sha256sum "$ASSETS_ROOT/provenance/trixie-InRelease" | cut -d' 
 sync
 umount "$WORK/root/sys"; SYS_MOUNTED=0
 umount "$WORK/root/proc"; PROC_MOUNTED=0
+umount "$WORK/root/dev/pts"; DEVPTS_MOUNTED=0
 umount "$WORK/root/dev"; DEV_MOUNTED=0
 umount "$WORK/root"; ROOT_MOUNTED=0
 e2fsck -pf "$ROOTFS_NEW" || [[ $? -eq 1 ]]
@@ -201,14 +236,14 @@ BUILT_AT="$(date --utc +%Y-%m-%dT%H:%M:%SZ)"
 
 jq -n \
   --arg architecture "$ARCH" \
-  --arg fcPath "$ASSETS_ROOT/firecracker/firecracker-v${FIRECRACKER_VERSION}-${ARCH}" \
+  --arg fcPath "$FC_BINARY" \
   --arg fcSha "$FC_BINARY_SHA" \
   --arg fcVersion "$FIRECRACKER_VERSION" \
   --arg fcProv "$ASSETS_ROOT/provenance/firecracker-binary.sha256" \
-  --arg kernelPath "$ASSETS_ROOT/kernel/vmlinux-${KERNEL_VERSION}" \
+  --arg kernelPath "$KERNEL_IMAGE" \
   --arg kernelSha "$VMLINUX_SHA" \
   --arg kernelVersion "$KERNEL_VERSION" \
-  --arg kernelProv "$ASSETS_ROOT/provenance/vmlinux.sha256" \
+  --arg kernelProv "$VMLINUX_PROVENANCE" \
   --arg rootfsPath "$ROOTFS_FINAL" \
   --arg rootfsSha "$ROOTFS_SHA" \
   --arg rootfsVersion "$DEBIAN_VERSION" \
