@@ -29,26 +29,33 @@ install -m 0755 "$SOURCE_ROOT/scripts/prompt2-handoff.sh" /usr/lib/smp/prompt2-h
 install -m 0755 "$SOURCE_ROOT/assets/guest/smp-seed-init.sh" /usr/lib/smp/assets/guest/smp-seed-init.sh
 install -m 0644 "$SOURCE_ROOT/assets/guest/smp-seed-init.service" /usr/lib/smp/assets/guest/smp-seed-init.service
 
+REVISION=/var/lib/smp/assets/provenance/kernel-capabilities-revision.json
+[[ -r $REVISION ]] || { printf 'corrected kernel capability provenance is unavailable\n' >&2; exit 66; }
+jq -e '
+  .schemaVersion == 1 and
+  (.enabledCapabilities | index("CONFIG_NF_TABLES_INET") != null) and
+  (.enabledCapabilities | index("CONFIG_NF_TABLES_IPV4") != null) and
+  (.enabledCapabilities | index("CONFIG_DUMMY") != null)' "$REVISION" >/dev/null || {
+    printf 'corrected kernel capability provenance is incomplete\n' >&2
+    exit 65
+}
+/usr/local/bin/smp --json assets >/dev/null
+
 rm -f /var/lib/smp/results/acceptance/result.json
 PRIMARY_STATUS="$(/usr/local/bin/smp status smp-cert-persistent --json 2>/dev/null || true)"
 if jq -e '.state == "ready" and (.process.pid | type == "number")' <<<"$PRIMARY_STATUS" >/dev/null 2>&1; then
-    printf 'Repairing host forwarding for the existing ready persistent VM\n'
+    printf 'Restarting the existing corrected persistent VM to clear failed-run process state\n'
+    /usr/local/bin/smp stop smp-cert-persistent >/dev/null
+    /usr/local/bin/smp start smp-cert-persistent >/dev/null
+    /usr/local/bin/smp wait smp-cert-persistent --timeout-seconds 180 >/dev/null
     /usr/lib/smp/repair-host-network.sh smp-cert-persistent
-    printf 'Resuming acceptance from the existing ready persistent VM\n'
+    printf 'Resuming complete acceptance on the clean persistent VM\n'
     /usr/lib/smp/acceptance.sh --resume-primary
 else
-    printf 'Removing failed certification machines and runtime state\n'
+    printf 'Recreating certification machines from the already-corrected canonical assets\n'
     for machine in smp-cert-disposable smp-cert-no-fallback smp-cert-isolated smp-cert-persistent; do
         /usr/local/bin/smp destroy "$machine" --force >/dev/null 2>&1 || true
     done
-
-    printf 'Repairing only the canonical guest initializer in the existing rootfs\n'
-    /usr/lib/smp/repair-rootfs.sh \
-      --assets-root /var/lib/smp/assets \
-      --source-root /usr/lib/smp/assets \
-      --build-commit "$EXPECTED_COMMIT"
-
-    printf 'Running complete real Firecracker acceptance\n'
     /usr/lib/smp/acceptance.sh
 fi
 
