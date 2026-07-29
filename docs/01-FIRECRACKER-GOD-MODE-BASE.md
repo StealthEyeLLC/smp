@@ -4,93 +4,199 @@ Status: Canonical product specification
 
 Project: SMP — Smallest Maximum Power
 
+Reviewed: 2026-07-29
+
 ## 1. Product contract
 
 The first SMP product is a standalone Firecracker microVM system that provides genuine unrestricted UID 0 inside a full Linux guest.
 
-The guest root authority is literal within the guest boundary. SMP must not impose command allowlists, reduced Linux capabilities, restricted shells, sudo mediation, read-only root, artificial workload modes, package restrictions, outbound network filtering, or a curated operation catalog.
+The guest-root authority is literal within the guest boundary. SMP must not impose command allowlists, reduced Linux capabilities, restricted shells, sudo mediation, read-only root, artificial workload modes, package restrictions, outbound network filtering, or a curated operation catalog.
 
-The guest remains bounded by the virtual hardware, kernel, resources, and connectivity actually assigned to the Firecracker microVM. Guest root is not host root.
+The guest remains bounded by the virtual hardware, kernel, resources, and connectivity actually assigned to the Firecracker microVM. Guest root is not host root. Arbitrary host-shell execution, host escape, undeclared host paths, and automatic host credential exposure are not part of this product contract.
 
-## 2. Smallest complete architecture
+## 2. Exact initial baseline
 
-The canonical architecture is:
+The first certified implementation lane is:
+
+- host and guest architecture: `x86_64`;
+- host: Linux with working hardware virtualization and usable KVM access;
+- VMM: official Firecracker `v1.15.1` release binary;
+- guest userspace: Debian stable;
+- guest kernel line: Linux `6.1`, built in a Firecracker-compatible boot format;
+- default VirtIO transport: PCI;
+- default local control: the `smp` CLI;
+- optional ChatGPT control: one MCP tool, `smp.go`.
+
+The implementation must pin the exact Firecracker release asset and record its SHA-256 digest. It must never download an unversioned `latest` binary during ordinary machine creation.
+
+An upgrade to another Firecracker version is an explicit compatibility change. The old pinned version must remain identifiable from machine state so an existing machine or snapshot is never silently opened under an incompatible VMM.
+
+Firecracker requires host and guest to use the same CPU architecture. Cross-architecture emulation is not part of the product.
+
+## 3. Smallest complete architecture
+
+The canonical local architecture is:
 
 ```text
 one SMP binary
 one Firecracker process per running microVM
 one machine directory
 one writable root disk
-one small seed disk
-one TAP interface
+one small read-only seed disk
+one TAP interface in the default network mode
 one Firecracker API socket
-normal root SSH
+normal direct root SSH
+bounded local logs
 no mandatory SMP daemon
 no database
 no scheduler
-no job system
+no worker pool
+no generalized job system
 no policy engine
 no receipt system
 ```
 
-SMP should be implemented as one Rust CLI and use an exact pinned official Firecracker release. The default launch path uses a generated Firecracker configuration file while retaining the API socket for direct native control.
+The optional ChatGPT path adds one running `smp serve` process or an even smaller equally complete MCP serving mode in the same binary. It must not create a second implementation of SMP lifecycle logic.
 
-## 3. Canonical host lane
+The normal launch path uses a generated Firecracker JSON configuration file and retains the API socket for post-boot native control.
 
-The first certified host lane is a supported Linux VPS or bare-metal host with usable KVM access.
+## 4. Firecracker launch law
 
-SMP must provide:
+### 4.1 Pinned official binary
 
-- `smp doctor` to report exact host readiness.
-- `smp doctor --fix` to perform ordinary unambiguous prerequisite repair.
-- automatic root re-execution when a requested host operation requires it.
-- exact failure when KVM or another mandatory full-power prerequisite is unavailable.
-- no silent fallback to containers, chroot, QEMU, a local shell, or a reduced guest.
+SMP uses the pinned official Firecracker binary, not an SMP fork. An operator may explicitly supply a different compatible binary through the raw path.
 
-## 4. Canonical guest
+### 4.2 PCI by default
 
-The canonical guest uses Debian stable with systemd, glibc, apt, OpenSSH, a general-purpose distro kernel, matching modules, and an initramfs.
+The canonical machine starts Firecracker with PCI VirtIO transport enabled. The kernel must include the required PCI and VirtIO PCI support.
 
-The root filesystem is a writable sparse ext4 image. Reflink cloning should be used when supported, with a correct sparse-copy fallback.
+MMIO remains available through an explicit operator override and the raw configuration path. SMP must not claim that PCI device hotplug is complete while upstream marks it developer preview.
 
-The image must support ordinary Linux administration, including:
+### 4.3 Preserve Firecracker seccomp
 
-- package installation;
-- service creation and control;
-- users and groups;
-- mounts and filesystems;
-- namespaces and cgroup v2;
+Firecracker's default host-side seccomp filters remain enabled. Disabling them creates no additional guest-root power and therefore violates the smallest-mechanism rule by adding host risk without increasing the promised authority domain.
+
+SMP must not add an in-guest seccomp policy.
+
+### 4.4 Jailer scope
+
+The power-first base does not require the Firecracker jailer. Production jailer integration belongs to later production hardening unless real implementation work proves it is required for correctness on the certified host.
+
+Deferring the jailer does not authorize disabling Firecracker's built-in seccomp filters.
+
+## 5. Canonical host lane
+
+The certified host must expose `/dev/kvm` with read and write access and must pass a real KVM API probe. File existence alone is insufficient.
+
+`smp doctor` must report at least:
+
+- CPU architecture and virtualization support;
+- host kernel version;
+- `/dev/kvm` permissions and KVM API usability;
+- available memory and disk space;
+- TUN/TAP availability;
+- nftables availability;
+- IP-forwarding state;
+- required filesystem and image-building tools;
+- SSH client availability;
+- Firecracker binary identity and digest;
+- conflicts that prevent the selected machine from starting.
+
+`smp doctor --fix` may install or configure ordinary unambiguous prerequisites for the declared host lane. It must print every change and fail rather than choose a weaker backend.
+
+Local interactive commands may re-execute through `sudo` when host privileges are required. Non-interactive and remote modes must never wait on an unseen sudo prompt; they must already possess the required authority or fail exactly.
+
+## 6. Canonical guest
+
+The guest uses Debian stable with systemd, glibc, apt, OpenSSH, nftables, and ordinary Linux administration tools.
+
+The canonical kernel is not assumed to be a distribution's compressed `/boot/vmlinuz` file. For `x86_64`, Firecracker requires an uncompressed ELF kernel image. SMP must build or acquire a Firecracker-compatible Linux 6.1 `vmlinux`, install its matching modules into the root filesystem, and record the exact kernel identity and configuration digest.
+
+The default boot path should not require an initramfs when the required boot-critical drivers and ext4 support are built into the kernel. Operator-supplied initrd/initramfs remains supported through the raw path.
+
+The kernel configuration must preserve broad guest administration power, including support for:
+
+- ext4 and loop devices;
+- loadable modules;
+- namespaces;
+- cgroup v2;
+- overlayfs;
 - nftables;
-- TUN, veth, and Linux bridge creation;
-- supported guest kernel-module loading;
-- compilers and ordinary native workloads;
-- nested software stacks and container runtimes supported by the guest kernel.
+- TUN/TAP, veth, and Linux bridging;
+- VirtIO block, network, PCI, RNG, and console devices;
+- vsock when selected;
+- ordinary container runtimes supported by the kernel.
 
-## 5. Minimal initialization
+A VirtIO entropy device is enabled in the canonical machine so first-boot key generation and cryptographic workloads do not depend on weak or stalled entropy initialization.
+
+On `x86_64`, the canonical boot arguments must include the serial console configuration needed for diagnostics and the kernel reboot behavior required to terminate the current Firecracker process cleanly. SMP must still treat reboot as a host-mediated lifecycle operation as defined below.
+
+## 7. Writable storage
+
+The root filesystem is a writable sparse ext4 image with a useful logical size. The canonical base image is never attached writable during ordinary machine operation.
+
+Machine creation uses a reflink clone when the host filesystem supports it and a correct sparse-copy fallback otherwise. A fallback may be slower but must not weaken guest behavior.
+
+The machine definition records the exact backing path, logical size, writable status, and base-image identity for every disk.
+
+SMP must support:
+
+- persistent writable root disks;
+- disposable writable root disks;
+- operator-supplied compatible root filesystems;
+- additional read-only or writable Firecracker block devices through the raw path;
+- block-device rescan after an explicit backing-file growth operation.
+
+SMP must refuse accidental simultaneous writable attachment of the same ordinary backing file to multiple running machines.
+
+## 8. Minimal initialization
 
 SMP must not require cloud-init or a permanent custom guest agent.
 
 Machine-specific initialization uses a tiny read-only ext4 seed disk and a one-shot systemd unit. The seed may contain:
 
 - hostname;
-- root authorized keys;
+- root authorized public keys;
 - network configuration;
 - optional files;
 - one optional arbitrary root initialization script.
 
-The one-shot service applies the declared configuration, runs the script, records its local completion state, and exits. It is not a resident control plane.
+The one-shot service:
 
-## 6. Networking
+1. validates the seed structure;
+2. creates a unique machine ID when required;
+3. generates unique guest SSH host keys;
+4. installs root authorized keys;
+5. configures networking and DNS;
+6. applies optional files;
+7. runs the optional root script exactly once;
+8. records local completion or failure state;
+9. exits permanently.
 
-The zero-configuration path creates one TAP interface per machine, deterministic private addressing, nftables forwarding and masquerading, and working DNS.
+No private SSH key may be embedded in the base image or seed disk.
 
-SMP must also permit operator-supplied networking without narrowing it, including an existing TAP, existing bridge, explicit MAC address, explicit guest address, multiple supported network interfaces, and native Firecracker rate-limiter configuration.
+## 9. Networking
 
-Simple host-port publication must be available without a proxy service.
+The zero-configuration path creates one TAP interface per machine, allocates and records deterministic private addressing with collision detection, configures a dedicated SMP nftables table for forwarding and masquerading, and provides working DNS.
 
-SMP must not silently filter guest networking.
+SMP must not replace the host's global forwarding policy with an unconditional accept policy. It adds only the rules required for the declared SMP network and removes only rules it owns.
 
-## 7. Local control surface
+Simple TCP and UDP host-port publication uses nftables DNAT and does not require a proxy process.
+
+SMP must permit operator-supplied networking without narrowing it, including:
+
+- an existing TAP;
+- an existing bridge;
+- explicit guest and gateway addresses;
+- an explicit MAC address;
+- multiple supported network interfaces through raw configuration;
+- native Firecracker rate-limiter configuration.
+
+First-class multiple-interface convenience commands may follow the base, but raw Firecracker access must not block the capability.
+
+SMP itself does not silently filter guest networking.
+
+## 10. Local control surface
 
 The primary zero-friction command is:
 
@@ -98,7 +204,7 @@ The primary zero-friction command is:
 sudo smp up
 ```
 
-With no name, it uses the machine name `default`. The command prepares missing shared assets, creates or reuses the machine, starts it, waits for guest initialization and root SSH, and opens the root shell.
+With no name, it uses the machine name `default`. The command prepares or reuses pinned shared assets, creates or reuses the machine, starts it, waits for successful guest initialization and direct root SSH, and opens the root shell.
 
 The canonical CLI includes at least:
 
@@ -121,14 +227,58 @@ smp destroy
 smp reconcile
 smp doctor
 smp api
+smp describe
 smp version
 ```
 
-`exec` must preserve arbitrary argv, standard streams, terminal behavior, signals, and the guest command exit status as faithfully as the SSH transport permits.
+`exec` passes an exact argument vector. SMP must not silently insert a shell. A shell is used only when the operator explicitly supplies one, such as `bash -lc`.
 
-Persistent mode is the default. Ephemeral mode changes only writable-state lifetime, not guest power.
+`exec` must preserve standard input, standard output, standard error, interactive terminal behavior, terminal resizing, signals, and the guest command's exit status as faithfully as SSH permits.
 
-## 8. Native-power escape hatches
+Persistent mode is the default. Disposable mode changes only writable-state lifetime, not guest power.
+
+## 11. Lifecycle truth
+
+SMP must distinguish at least:
+
+- absent;
+- created;
+- starting;
+- running;
+- ready;
+- stopped;
+- crashed;
+- stale.
+
+A PID alone does not prove a running Firecracker instance. SMP must bind the machine to the expected executable, PID start time, API socket, configuration, and machine directory.
+
+`ready` means the expected Firecracker process is running, the guest has completed initialization successfully, and direct root SSH works.
+
+### 11.1 Reboot semantics
+
+Firecracker does not provide a general in-place guest reboot contract. On the canonical `x86_64` lane, guest reboot with the required kernel arguments terminates the current Firecracker process.
+
+Therefore `smp reboot NAME` means:
+
+1. request a graceful guest reboot or shutdown;
+2. verify termination of the old Firecracker process;
+3. preserve the writable disks and machine definition;
+4. start a new Firecracker process for the same machine;
+5. wait for the guest to become ready again.
+
+SMP must not claim that the original VMM process survived the reboot.
+
+### 11.2 Stop and kill
+
+`stop` attempts graceful guest shutdown and then handles any architecture-specific Firecracker process behavior explicitly. `kill` forcibly terminates the verified Firecracker process. Neither operation removes persistent writable state.
+
+### 11.3 Serial behavior
+
+Detached machines write serial output to bounded local storage. `smp logs` and `smp console` may follow that output. The base does not promise interactive serial input to a detached process.
+
+When native interactive serial input is required, `smp start --foreground` exposes Firecracker's foreground console directly. This preserves the capability without adding a permanent console broker process.
+
+## 12. Native-power escape hatches
 
 SMP must never become the Firecracker capability ceiling.
 
@@ -140,28 +290,29 @@ It must provide direct access to:
 - an operator-supplied Firecracker binary;
 - an operator-supplied kernel, initrd, boot arguments, and root filesystem;
 - arbitrary supported drives and network interfaces;
+- block-device rescan;
 - supported native features such as vsock, MMDS, entropy devices, rate limiters, snapshots, PMEM, memory controls, and CPU templates when present in the pinned release.
 
-Features not yet wrapped by a first-class SMP command remain reachable through the raw path.
+Full snapshots are stable native functionality in the pinned baseline and may receive first-class commands after the base lifecycle passes. Differential snapshots and PCI device hotplug remain outside the canonical completion claim while upstream marks them developer preview.
 
-## 9. Standalone ChatGPT control
+Features not yet wrapped by a first-class SMP command remain reachable through the raw API or complete raw configuration path.
 
-SMP includes an optional remote-control mode so ChatGPT can operate SMP on an authorized VPS without depending on Baby or another StealthEye repository.
+## 13. Standalone ChatGPT control
 
-The official ChatGPT integration exposes exactly one callable tool:
+SMP includes an optional remote MCP mode so ChatGPT can operate SMP on an authorized VPS without Baby or another StealthEye repository.
+
+The official integration exposes exactly one callable tool with the canonical identity:
 
 ```text
 smp.go
 ```
 
-This is a binding interface rule.
-
-The integration must not expose separate callable tools for machine creation, command execution, file transfer, snapshots, images, inspection, networking, or lifecycle actions. All operations pass through `smp.go` using a structured request.
+For MCP implementations that namespace a server and its tools, the server/app identifier is `smp` and its only tool is `go`. No second callable tool is permitted.
 
 Canonical path:
 
 ```text
-ChatGPT -> smp.go -> SMP remote endpoint on the authorized VPS -> SMP core -> Firecracker
+ChatGPT -> smp.go -> SMP MCP endpoint on the authorized VPS -> SMP core -> Firecracker
 ```
 
 Local path:
@@ -170,74 +321,156 @@ Local path:
 operator -> smp CLI -> Firecracker
 ```
 
-The remote endpoint is optional. Local SMP must remain fully usable without it.
+The remote endpoint is optional. Local SMP remains fully usable without ChatGPT, MCP, a plugin, or a public listener.
 
-### 9.1 Request envelope
+### 13.1 Reachability
 
-The stable request envelope should remain small and extensible:
+The preferred ChatGPT connection uses a supported private secure MCP tunnel so the SMP endpoint does not require an open public inbound port.
+
+When a direct remote endpoint is deliberately selected, it must use authenticated encrypted transport. Anonymous public control is never a valid zero-friction mode.
+
+SMP itself adds no per-operation approval workflow. ChatGPT or workspace policy may still display platform-required confirmations for write actions; SMP must not misrepresent platform behavior.
+
+### 13.2 Capability discovery
+
+The first operation implemented by `smp.go` is `describe`.
+
+`describe` returns:
+
+- SMP version and build identity;
+- request and response schema versions;
+- supported operation names;
+- operation argument schemas;
+- Firecracker version and digest;
+- host architecture and certified status;
+- limits for inline input, output, and timeouts;
+- current machine names and summary state when requested.
+
+The published MCP tool schema remains stable and broad. New SMP capabilities appear through the runtime `describe` catalog rather than by publishing additional tools.
+
+### 13.3 Request envelope
+
+The canonical envelope is small, strict, and extensible:
 
 ```json
 {
+  "schemaVersion": 1,
+  "requestId": "018f6f3d-3e1a-7c20-9ca5-9f826e9349e5",
   "operation": "exec",
   "machine": "default",
   "argv": ["bash", "-lc", "apt update && apt install -y git"],
   "stdin": null,
   "timeoutSeconds": 300,
   "outputLimitBytes": 1048576,
+  "detach": false,
   "options": {}
 }
 ```
 
-Only fields needed by an operation are required. Future capabilities extend operation values and options; they do not create additional plugin tools.
+Only fields required by the selected operation are mandatory. `operation` is a string rather than a frozen enumeration so the one tool can gain capabilities without republishing its callable surface.
 
-### 9.2 Required operation classes
+All command-bearing operations use exact argument arrays. A raw shell command string must not be silently constructed or reinterpreted.
 
-The one tool must be capable of expressing:
+### 13.4 Retry identity
 
-- host diagnosis and setup;
-- machine lifecycle;
-- arbitrary guest-root command execution;
-- interactive-session preparation;
-- file upload and download through explicit paths;
-- machine and runtime inspection;
-- image and disk operations;
-- network configuration and port publication;
-- snapshot and restore operations;
-- raw Firecracker API requests;
-- raw SMP CLI access for capabilities not yet represented structurally.
+`requestId` provides minimal network retry correctness:
 
-### 9.3 Power preservation
+- the same `requestId` with the same normalized request returns the existing result or operation handle;
+- the same `requestId` with a different request fails with a conflict;
+- SMP must not create duplicate machines or duplicate long-running operations because ChatGPT retried a timed-out call.
 
-`smp.go` must not become a fixed command allowlist that is weaker than the local SMP CLI.
+This is a small request record, not a generalized transaction or receipt system.
 
-A raw escape operation must preserve access to the full SMP command surface and native Firecracker API. Structured operations are conveniences, not authority boundaries.
+### 13.5 Response envelope
 
-The response must preserve exact success or failure, exit status, bounded stdout and stderr, truncation truth, and relevant resulting machine state.
+The response preserves exact truth:
 
-### 9.4 Minimal remote component
+```json
+{
+  "schemaVersion": 1,
+  "requestId": "018f6f3d-3e1a-7c20-9ca5-9f826e9349e5",
+  "state": "completed",
+  "exitCode": 0,
+  "timedOut": false,
+  "stdout": "",
+  "stderr": "",
+  "stdoutComplete": true,
+  "stderrComplete": true,
+  "resultHandle": null,
+  "machineState": "ready",
+  "error": null
+}
+```
 
-The remote bridge should be the smallest component that creates the required reachability:
+Transport success must not be represented as operation success. Guest command failure, SMP failure, timeout, cancellation, and transport loss remain distinguishable.
 
-- preferably an optional `smp serve` mode in the same binary;
-- one authenticated HTTPS endpoint for `smp.go`;
-- no separate database, scheduler, workflow engine, or resident guest agent;
-- no dependency on another StealthEye service;
-- no per-operation plugin proliferation.
+### 13.6 Long output and disconnected operations
 
-Authentication and public exposure are necessary transport correctness, not a broad safety architecture. Exact production hardening remains outside the current power-first scope.
+Inline output is bounded so one command cannot overflow the ChatGPT tool channel. Bounded output must not mean lost output.
 
-## 10. Minimum correctness
+When output exceeds the inline limit, SMP stores the complete stdout and stderr as plain bounded-lifetime files and returns a `resultHandle`. The same `smp.go` tool supports `result.get` and `result.read` operations for status and chunked continuation.
 
-SMP must use per-machine locking, exact Firecracker process identity, atomic machine-state replacement, explicit partial-failure reporting, retained failure logs, and current host truth rather than trusting stale state files.
+Long operations may run in detached mode and return a result handle. The same tool supports status, wait, read, and cancel operations.
+
+This mechanism must remain smaller than a job system:
+
+- no queue;
+- no scheduler;
+- no worker service;
+- no automatic retry policy;
+- no database;
+- no dependency graph;
+- no generalized workflow model.
+
+A detached operation is one directly spawned process plus a small state file, verified by PID start time and output files. It exists only to survive an MCP call timeout or client disconnect without duplicating work.
+
+### 13.7 File transfer
+
+The one tool must support explicit guest file upload and download. Small content may travel inline with an explicit encoding. Larger content may use a temporary result handle served by the same SMP endpoint.
+
+File transfer does not justify a second callable plugin tool or a generalized artifact service.
+
+### 13.8 Power preservation
+
+`smp.go` must not become a fixed command allowlist weaker than the local CLI.
+
+A raw SMP operation accepts exact `smp` argument vectors. A raw Firecracker API operation accepts an exact method, path, headers, and body for the selected machine's API socket.
+
+These raw paths expose the full SMP and Firecracker control surfaces. They do not silently become arbitrary host-shell execution, which is outside the declared product authority domain.
+
+## 14. Minimum correctness
+
+SMP must use:
+
+- per-machine locking;
+- exact Firecracker process identity;
+- atomic machine-state replacement;
+- explicit partial-failure reporting;
+- bounded retained failure logs;
+- current host truth rather than stale state-file claims;
+- base-image immutability checks;
+- deterministic machine and network identity;
+- exact external-component version reporting.
 
 A CLI process exiting must not stop a persistent microVM.
 
 `reconcile` may reconstruct only unambiguous missing runtime resources. Ambiguous state must be reported rather than guessed into success.
 
-No generalized receipts, signed evidence, append-only event chain, durable jobs, or policy records are required in this phase.
+No generalized receipts, signed evidence, append-only event chain, durable jobs, scheduler, or policy records are required in this phase.
 
-## 11. Completion condition
+## 15. Completion condition
 
-This product is complete only when a real KVM host proves that the canonical guest can boot, provide unrestricted root, install software, manage the operating system, exercise the promised kernel and networking facilities, reboot, persist, stop, restart, and be destroyed without an SMP-imposed capability restriction.
+The base is complete only when a real certified KVM host proves that:
 
-The same installation must also prove that ChatGPT can reach the complete SMP surface through the single `smp.go` tool when the optional remote mode is enabled.
+- the pinned official Firecracker binary and digest are used;
+- the Firecracker-compatible kernel boots through PCI VirtIO by default;
+- default Firecracker seccomp remains enabled;
+- the canonical guest provides unrestricted root inside its declared boundary;
+- package, filesystem, service, process, namespace, cgroup, network, firewall, module, and compiler operations work;
+- persistent and disposable storage behave exactly as declared;
+- host-mediated reboot reconnects to a new verified Firecracker process;
+- raw configuration and API access preserve native power;
+- `sudo smp up` provides the zero-friction local path;
+- one ChatGPT MCP integration exposes only `smp.go` and reaches the complete SMP surface;
+- retries, disconnections, long output, and long operations do not create duplicate work or false success;
+- no private StealthEye implementation was imported without explicit authorization.
