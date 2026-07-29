@@ -198,11 +198,11 @@ fn table_name(name: &str) -> String {
 }
 
 fn subnet(network: &NetworkRecord) -> String {
-    network
-        .gateway_address
-        .trim_end_matches(".1")
-        .to_owned()
-        + ".0"
+    let mut octets = network.gateway_address.split('.');
+    let a = octets.next().unwrap_or("0");
+    let b = octets.next().unwrap_or("0");
+    let c = octets.next().unwrap_or("0");
+    format!("{a}.{b}.{c}.0")
 }
 
 fn run_checked(program: &str, args: &[&str]) -> Result<()> {
@@ -237,5 +237,12 @@ mod tests {
     #[test]
     fn tap_name_fits_linux_limit() {
         assert!(default_network("default", vec![]).tap_name.len() <= 15);
+    }
+
+    #[test]
+    fn subnet_preserves_third_octet_ending_in_one() {
+        let mut network = default_network("default", vec![]);
+        network.gateway_address = "172.31.11.1".to_owned();
+        assert_eq!(subnet(&network), "172.31.11.0");
     }
 }
