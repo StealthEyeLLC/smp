@@ -42,7 +42,9 @@ trap cleanup EXIT
 
 stage 'Host and asset verification'
 smp doctor --fix
-smp assets
+if [[ $RESUME_PRIMARY -eq 0 ]]; then
+    smp assets
+fi
 MANIFEST=/var/lib/smp/assets/manifest.json
 BASE_PATH="$(jq -r .rootfs.path "$MANIFEST")"
 BASE_BEFORE="$(sha256sum "$BASE_PATH" | cut -d' ' -f1)"
@@ -100,7 +102,7 @@ EOF
 gcc -O2 -o /root/native /root/native.c; test "$(/root/native)" = native-ok'
 
 stage 'Published port and exact argv behavior'
-smp exec "$PRIMARY" -- bash -lc 'pkill -f "nc -l -p 8080" >/dev/null 2>&1 || true; nohup sh -c "while true; do printf published-ok | nc -l -p 8080 -q 1; done" >/root/listener.log 2>&1 </dev/null &'
+smp exec "$PRIMARY" -- bash -lc 'pkill -x nc >/dev/null 2>&1 || true; nohup sh -c "while true; do printf \"HTTP/1.1 200 OK\\r\\nContent-Length: 12\\r\\nConnection: close\\r\\n\\r\\npublished-ok\" | nc -l -p 8080 -q 1; done" >/root/listener.log 2>&1 </dev/null &'
 for _ in $(seq 1 30); do
     if [[ "$(curl --silent --max-time 1 "http://127.0.0.1:${HOST_PORT}" || true)" == published-ok ]]; then break; fi
     sleep 1
