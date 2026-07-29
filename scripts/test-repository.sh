@@ -3,12 +3,31 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-if cargo fmt --version >/dev/null 2>&1; then
-    cargo fmt --all -- --check
+RUST_TOOLCHAIN="${SMP_RUST_TOOLCHAIN:-}"
+LOCK_ARGS=()
+if [[ ${SMP_CARGO_LOCKED:-0} == 1 ]]; then
+    LOCK_ARGS+=(--locked)
 fi
-cargo test --all-targets
-if cargo clippy --version >/dev/null 2>&1; then
-    cargo clippy --all-targets
+
+cargo_run() {
+    if [[ -n $RUST_TOOLCHAIN ]]; then
+        rustup run "$RUST_TOOLCHAIN" cargo "$@"
+    else
+        cargo "$@"
+    fi
+}
+
+if [[ ${SMP_CARGO_LOCKED:-0} == 1 ]]; then
+    [[ -f Cargo.lock ]] || { printf 'Cargo.lock is required for locked repository checks\n' >&2; exit 1; }
+    cargo_run metadata --format-version 1 "${LOCK_ARGS[@]}" >/dev/null
+fi
+
+if cargo_run fmt --version >/dev/null 2>&1; then
+    cargo_run fmt --all -- --check
+fi
+cargo_run test --all-targets "${LOCK_ARGS[@]}"
+if cargo_run clippy --version >/dev/null 2>&1; then
+    cargo_run clippy --all-targets "${LOCK_ARGS[@]}"
 fi
 
 for script in scripts/*.sh assets/guest/*.sh; do
