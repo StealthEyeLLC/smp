@@ -39,18 +39,29 @@ if [[ $SKIP_PACKAGES -eq 0 ]]; then
       xz-utils zstd bison flex libelf-dev bc dwarves rsync file kmod procps shellcheck
 fi
 
-for tool in cargo rustc curl git install systemctl sha256sum jq; do
+for tool in cargo rustc curl git install systemctl sha256sum jq tar; do
     command -v "$tool" >/dev/null || { printf 'missing bootstrap tool: %s\n' "$tool" >&2; exit 69; }
 done
 
+BUILD_ROOT="$(mktemp -d /var/tmp/smp-bootstrap.XXXXXX)"
+TMP_CLOUDFLARED=
+cleanup() {
+    [[ -z $TMP_CLOUDFLARED ]] || rm -f "$TMP_CLOUDFLARED"
+    rm -rf "$BUILD_ROOT"
+}
+trap cleanup EXIT
+mkdir -p "$BUILD_ROOT/source"
+git -C "$SOURCE" archive --format=tar "$COMMIT" | tar -xf - -C "$BUILD_ROOT/source"
+BUILD_SOURCE="$BUILD_ROOT/source"
+
 printf 'Checking SMP repository commit %s\n' "$COMMIT"
-"$SOURCE/scripts/test-repository.sh"
+"$BUILD_SOURCE/scripts/test-repository.sh"
 printf 'Building SMP commit %s\n' "$COMMIT"
 (
-    cd "$SOURCE"
+    cd "$BUILD_SOURCE"
     SMP_BUILD_COMMIT="$COMMIT" cargo build --release
 )
-CANDIDATE="$SOURCE/target/release/smp"
+CANDIDATE="$BUILD_SOURCE/target/release/smp"
 [[ -x $CANDIDATE ]] || { printf 'SMP release binary was not produced\n' >&2; exit 70; }
 CANDIDATE_SHA="$(sha256sum "$CANDIDATE" | cut -d' ' -f1)"
 
@@ -59,26 +70,25 @@ install -d -m 0700 /var/lib/smp /var/lib/smp/machines /var/lib/smp/assets /var/l
 install -m 0755 "$CANDIDATE" /usr/local/bin/smp.new
 mv -f /usr/local/bin/smp.new /usr/local/bin/smp
 for script in build-assets.sh create-seed.sh test-repository.sh acceptance.sh prompt2-handoff.sh uninstall.sh; do
-    install -m 0755 "$SOURCE/scripts/$script" "/usr/lib/smp/$script"
+    install -m 0755 "$BUILD_SOURCE/scripts/$script" "/usr/lib/smp/$script"
 done
 rm -rf /usr/lib/smp/assets.new
 install -d -m 0755 /usr/lib/smp/assets.new
-cp -a "$SOURCE/assets/." /usr/lib/smp/assets.new/
+cp -a "$BUILD_SOURCE/assets/." /usr/lib/smp/assets.new/
 rm -rf /usr/lib/smp/assets
 mv /usr/lib/smp/assets.new /usr/lib/smp/assets
-install -m 0644 "$SOURCE/packaging/systemd/smp.service" /etc/systemd/system/smp.service
-install -m 0644 "$SOURCE/packaging/systemd/smp-tunnel.service" /etc/systemd/system/smp-tunnel.service
-install -m 0644 "$SOURCE/plugin/SMP.json" /etc/smp/SMP.plugin.json
-install -m 0644 "$SOURCE/plugin/smp.go.schema.json" /etc/smp/smp.go.schema.json
+install -m 0644 "$BUILD_SOURCE/packaging/systemd/smp.service" /etc/systemd/system/smp.service
+install -m 0644 "$BUILD_SOURCE/packaging/systemd/smp-tunnel.service" /etc/systemd/system/smp-tunnel.service
+install -m 0644 "$BUILD_SOURCE/plugin/SMP.json" /etc/smp/SMP.plugin.json
+install -m 0644 "$BUILD_SOURCE/plugin/smp.go.schema.json" /etc/smp/smp.go.schema.json
 
 TMP_CLOUDFLARED="$(mktemp)"
-trap 'rm -f "$TMP_CLOUDFLARED"' EXIT
 curl --fail --location --proto '=https' --tlsv1.2 --retry 4 --output "$TMP_CLOUDFLARED" "$CLOUDFLARED_URL"
 printf '%s  %s\n' "$CLOUDFLARED_SHA256" "$TMP_CLOUDFLARED" | sha256sum --check --strict -
 install -m 0755 "$TMP_CLOUDFLARED" /usr/local/bin/cloudflared.new
 mv -f /usr/local/bin/cloudflared.new /usr/local/bin/cloudflared
 rm -f "$TMP_CLOUDFLARED"
-trap - EXIT
+TMP_CLOUDFLARED=
 
 INSTALLED_VERSION="$(/usr/local/bin/smp --json version | jq -r .version)"
 cat > /etc/smp/install.json.new <<INSTALL
