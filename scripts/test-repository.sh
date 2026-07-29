@@ -50,11 +50,10 @@ TOOLS_LIST_COUNT="$(grep -R --include='*.rs' -F '"name": "go"' src/server.rs | w
     exit 1
 }
 
-# The Rust network lifecycle must own host-chain insertion and cleanup before
-# Firecracker waits for guest SSH. The legacy-named helper is audit-only.
-grep -Fq 'SMP_PR_' src/network.rs
-grep -Fq 'SMP_NO_' src/network.rs
-grep -Fq 'cleanup_owned_chains' src/network.rs
+# The Rust behavioral tests exercise deterministic chain generation, all six
+# hooks, publication, forwarding, return paths, isolation, and cleanup bindings.
+# The only structural shell assertion is that the legacy-named helper is
+# audit-only.
 grep -Fq 'core-owned host networking verified' scripts/repair-host-network.sh
 ! grep -Eq 'iptables[[:space:]].*(-I|--insert)|sysctl[[:space:]].*-w' scripts/repair-host-network.sh
 

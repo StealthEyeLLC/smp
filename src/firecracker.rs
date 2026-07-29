@@ -191,14 +191,18 @@ pub fn launch(
         }
     }
 
-    let child = command.spawn().context("launch Firecracker")?;
+    let mut child = command.spawn().context("launch Firecracker")?;
     let pid = child.id();
     let deadline = Instant::now() + Duration::from_secs(3);
     let start_time_ticks = loop {
         match process_start_time_ticks(pid) {
             Ok(value) => break value,
             Err(_) if Instant::now() < deadline => thread::sleep(Duration::from_millis(20)),
-            Err(error) => return Err(error).context("identify Firecracker process"),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error).context("identify Firecracker process");
+            }
         }
     };
     let identity = ProcessIdentity {
@@ -207,8 +211,18 @@ pub fn launch(
         executable: record.firecracker.path.clone(),
         executable_sha256: record.firecracker.sha256.clone(),
     };
-    if !verify_process(&identity)? {
-        bail!("new Firecracker process identity could not be verified");
+    match verify_process(&identity) {
+        Ok(true) => {}
+        Ok(false) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("new Firecracker process identity could not be verified");
+        }
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error).context("verify new Firecracker process identity");
+        }
     }
     Ok(identity)
 }

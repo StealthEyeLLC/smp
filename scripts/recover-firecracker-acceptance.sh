@@ -40,7 +40,7 @@ finalize() {
     for machine in "${CERT_MACHINES[@]}"; do
         capture_command "final-${machine}-status" /usr/local/bin/smp status "$machine" --json
     done
-    capture_command final-processes ps -eo pid,ppid,lstart,stat,cmd
+    capture_command final-processes ps -eo pid,ppid,lstart,stat,comm
     capture_command final-links ip -details link show
     capture_command final-addresses ip -details address show
     capture_command final-routes ip route show table all
@@ -85,7 +85,7 @@ for machine in "${CERT_MACHINES[@]}"; do
     [[ ! -r /var/lib/smp/machines/$machine/machine.json ]] || cp -a "/var/lib/smp/machines/$machine/machine.json" "$ARCHIVE/${machine}.machine.before.json"
     capture_command "before-${machine}-status" /usr/local/bin/smp status "$machine" --json
 done
-capture_command before-processes ps -eo pid,ppid,lstart,stat,cmd
+capture_command before-processes ps -eo pid,ppid,lstart,stat,comm
 capture_command before-links ip -details link show
 capture_command before-addresses ip -details address show
 capture_command before-routes ip route show table all
@@ -109,14 +109,28 @@ INSTALLED_SHA="$(sha256sum /usr/local/bin/smp | cut -d' ' -f1)"
 RECORDED_SHA="$(jq -r .binarySha256 /etc/smp/install.json)"
 [[ $INSTALLED_SHA == "$RECORDED_SHA" ]] || { printf 'installed SMP binary digest mismatch\n' >&2; exit 65; }
 
-MANIFEST=/var/lib/smp/assets/manifest.json
-REVISION=/var/lib/smp/assets/provenance/kernel-capabilities-revision.json
-[[ -r $MANIFEST && -r $REVISION ]] || { printf 'corrected canonical asset metadata is unavailable\n' >&2; exit 66; }
+ASSETS_ROOT=/var/lib/smp/assets
+MANIFEST=$ASSETS_ROOT/manifest.json
+REVISION=$ASSETS_ROOT/provenance/kernel-capabilities-revision.json
+FIRECRACKER_ARCHIVE=$ASSETS_ROOT/downloads/firecracker-v1.15.1-x86_64.tgz
+KERNEL_MODULES=$ASSETS_ROOT/kernel/modules-6.1.177
+KERNEL_CONFIG_PROVENANCE=$ASSETS_ROOT/provenance/kernel-config.sha256
+MODULE_PROVENANCE=$ASSETS_ROOT/provenance/module-tree.sha256
+[[ -r $MANIFEST && -r $REVISION && -f $FIRECRACKER_ARCHIVE &&
+   -d $KERNEL_MODULES && -r $KERNEL_CONFIG_PROVENANCE && -r $MODULE_PROVENANCE ]] || {
+    printf 'corrected canonical asset metadata or retained assets are unavailable\n' >&2
+    exit 66
+}
+hash_tree() {
+    local directory=$1
+    find "$directory" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1
+}
 jq -e '
   .schemaVersion == 1 and
   .architecture == "x86_64" and
   .firecracker.version == "1.15.1" and
   .firecracker.sha256 == "7e8b57e88c459396d4680d83dcdd8c7f72305447cb55b11f4ac98ad70a3f7825" and
+  .firecrackerReleaseAsset == "firecracker-v1.15.1-x86_64.tgz" and
   .firecrackerReleaseSha256 == "d4a32ab2322d887ca1bc4a4e7afa9cc35393e6362dfc2b3becb389d362e4275a" and
   .kernel.version == "6.1.177" and
   .kernel.sha256 == "d1134da8fddbebbb0212f193398e64e60533a9d5d2363cc62e361c2e4bae95fb" and
@@ -126,11 +140,33 @@ jq -e '
   .debianVersion == "13.6" and .debianSuite == "trixie"' "$MANIFEST" >/dev/null
 jq -e '
   .schemaVersion == 1 and
+  .kernelSha256 == "d1134da8fddbebbb0212f193398e64e60533a9d5d2363cc62e361c2e4bae95fb" and
+  .moduleTreeSha256 == "ac0f97629f17612332ebe6b469a46195dda39bf7ff0725192908886acbe59eb4" and
+  .rootfsSha256 == "501d447bcaf180a50a834f438e88d2733aa309d656d19bb9f2a0433536f99da5" and
+  .kernelConfigSha256 == "f40b6317e62eb55f9b019e1d0359350c505688b5cf362cc32d8b541cc9844df4" and
   (.enabledCapabilities | index("CONFIG_NF_TABLES") != null) and
   (.enabledCapabilities | index("CONFIG_NF_TABLES_IPV4") != null) and
   (.enabledCapabilities | index("CONFIG_NF_TABLES_IPV6") != null) and
   (.enabledCapabilities | index("CONFIG_NF_TABLES_INET") != null) and
   (.enabledCapabilities | index("CONFIG_DUMMY") != null)' "$REVISION" >/dev/null
+FIRECRACKER_ARCHIVE_SHA="$(sha256sum "$FIRECRACKER_ARCHIVE" | cut -d' ' -f1)"
+[[ $FIRECRACKER_ARCHIVE_SHA == d4a32ab2322d887ca1bc4a4e7afa9cc35393e6362dfc2b3becb389d362e4275a ]] || {
+    printf 'Firecracker archive digest mismatch: %s\n' "$FIRECRACKER_ARCHIVE_SHA" >&2
+    exit 65
+}
+MODULE_TREE_SHA="$(hash_tree "$KERNEL_MODULES")"
+[[ $MODULE_TREE_SHA == ac0f97629f17612332ebe6b469a46195dda39bf7ff0725192908886acbe59eb4 ]] || {
+    printf 'kernel module-tree digest mismatch: %s\n' "$MODULE_TREE_SHA" >&2
+    exit 65
+}
+[[ "$(awk 'NR == 1 {print $1}' "$KERNEL_CONFIG_PROVENANCE")" == f40b6317e62eb55f9b019e1d0359350c505688b5cf362cc32d8b541cc9844df4 ]] || {
+    printf 'kernel configuration provenance digest mismatch\n' >&2
+    exit 65
+}
+[[ "$(awk 'NR == 1 {print $1}' "$MODULE_PROVENANCE")" == "$MODULE_TREE_SHA" ]] || {
+    printf 'kernel module-tree provenance digest mismatch\n' >&2
+    exit 65
+}
 for spec in \
   'firecracker 7e8b57e88c459396d4680d83dcdd8c7f72305447cb55b11f4ac98ad70a3f7825' \
   'kernel d1134da8fddbebbb0212f193398e64e60533a9d5d2363cc62e361c2e4bae95fb' \
@@ -183,7 +219,7 @@ cleanup_stale_machine() {
         [[ $pid == $$ || $pid == $PPID ]] && continue
         text="$(tr '\0' ' ' < "$cmdline" 2>/dev/null || true)"
         if [[ $text == *"$api_socket"* || $text == *"$config_path"* ]]; then
-            printf 'stale machine still has a process referencing its socket or config: pid=%s cmd=%s\n' "$pid" "$text" >&2
+            printf 'stale machine still has a process referencing its socket or config: pid=%s\n' "$pid" >&2
             exit 75
         fi
     done

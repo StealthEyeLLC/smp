@@ -41,8 +41,12 @@ if [[ -e $SOURCE_ROOT ]]; then
 fi
 mv "$STAGING" "$SOURCE_ROOT"
 
+ARCHIVE_STAMP="$(date --utc +%Y%m%dT%H%M%SZ)"
 if [[ -e $LOG ]]; then
-    mv "$LOG" "$RESULT_ROOT/final-recovery.previous.$(date --utc +%Y%m%dT%H%M%SZ).log"
+    mv "$LOG" "$RESULT_ROOT/final-recovery.previous.${ARCHIVE_STAMP}.log"
+fi
+if [[ -e $STATUS_FILE ]]; then
+    mv "$STATUS_FILE" "$RESULT_ROOT/final-recovery.previous.${ARCHIVE_STAMP}.status.json"
 fi
 rm -f "$PID_FILE" "$STATUS_FILE"
 {

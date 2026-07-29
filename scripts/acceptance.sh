@@ -53,6 +53,31 @@ cleanup() {
 }
 trap cleanup EXIT
 
+assert_network_absent() {
+    local name=$1
+    local status=$2
+    local tap suffix legacy_table
+    tap="$(jq -er '.network.tapName' <<<"$status")"
+    suffix="$(printf '%s' "$name" | sha256sum | cut -c1-10)"
+    legacy_table="smp_$(printf '%s' "$name" | sha256sum | cut -c1-12)"
+    if ip link show dev "$tap" >/dev/null 2>&1; then
+        printf 'machine network cleanup left TAP %s for %s\n' "$tap" "$name" >&2
+        return 1
+    fi
+    if iptables-save -t filter | grep -F "$suffix" >/dev/null; then
+        printf 'machine network cleanup left filter state for %s\n' "$name" >&2
+        return 1
+    fi
+    if iptables-save -t nat | grep -F "$suffix" >/dev/null; then
+        printf 'machine network cleanup left NAT state for %s\n' "$name" >&2
+        return 1
+    fi
+    if nft list tables | grep -Fx "table ip $legacy_table" >/dev/null; then
+        printf 'machine network cleanup left legacy nftables state for %s\n' "$name" >&2
+        return 1
+    fi
+}
+
 probe_host_http() {
     local label=$1
     local url=$2
@@ -295,8 +320,10 @@ smp create "$DISPOSABLE" --mode disposable --transport pci --memory-mib 1024
 smp start "$DISPOSABLE"
 smp wait "$DISPOSABLE" --timeout-seconds 180
 smp exec "$DISPOSABLE" -- sh -c 'printf disposable >/root/value'
+DISPOSABLE_STATUS="$(smp status "$DISPOSABLE" --json)"
 smp destroy "$DISPOSABLE" --force
 [[ ! -e "/var/lib/smp/machines/$DISPOSABLE" ]]
+assert_network_absent "$DISPOSABLE" "$DISPOSABLE_STATUS"
 
 stage 'Firecracker API and no-fallback failure behavior'
 smp api "$PRIMARY" --method GET --path /machine-config --json | jq -e '.httpStatus == 200' >/dev/null
@@ -308,14 +335,25 @@ smp start "$FAILURE"
 START_FAILURE=$?
 set -e
 [[ $START_FAILURE -ne 0 ]]
-[[ "$(smp status "$FAILURE" --json | jq -r .state)" != ready ]]
+FAILURE_STATUS="$(smp status "$FAILURE" --json)"
+jq -e '.state != "ready" and .process == null' <<<"$FAILURE_STATUS" >/dev/null
+assert_network_absent "$FAILURE" "$FAILURE_STATUS"
 
 stage 'Base image immutability and cleanup'
 BASE_AFTER="$(sha256sum "$BASE_PATH" | cut -d' ' -f1)"
 [[ "$BASE_BEFORE" == "$BASE_AFTER" ]]
 smp stop "$SECONDARY"
+SECONDARY_STATUS="$(smp status "$SECONDARY" --json)"
+assert_network_absent "$SECONDARY" "$SECONDARY_STATUS"
 smp destroy "$SECONDARY"
+smp destroy "$FAILURE" --force
 smp stop "$PRIMARY"
+PRIMARY_STATUS="$(smp status "$PRIMARY" --json)"
+jq -e '.state == "stopped" and .process == null' <<<"$PRIMARY_STATUS" >/dev/null
+assert_network_absent "$PRIMARY" "$PRIMARY_STATUS"
+for machine in "$DISPOSABLE" "$FAILURE" "$SECONDARY"; do
+    [[ ! -e "/var/lib/smp/machines/$machine" ]]
+done
 rm -f "$RESULT_ROOT/not-firecracker"
 trap - EXIT
 

@@ -41,7 +41,7 @@ pub fn create(name: &str, network: &NetworkRecord) -> Result<()> {
         return Ok(());
     }
     cleanup_owned_chains(name)?;
-    remove_legacy_nft_table(name);
+    remove_legacy_nft_table(name)?;
     remove_legacy_direct_rules(network)?;
     check_collision(network)?;
 
@@ -56,24 +56,25 @@ pub fn create(name: &str, network: &NetworkRecord) -> Result<()> {
         configure_host_network(name, network)?;
         Ok(())
     })();
-    if result.is_err() {
-        let _ = cleanup(name, network);
+    if let Err(error) = result {
+        if let Err(cleanup_error) = cleanup(name, network) {
+            bail!("host network setup failed: {error:#}; cleanup also failed: {cleanup_error:#}");
+        }
+        return Err(error);
     }
-    result
+    Ok(())
 }
 
 pub fn cleanup(name: &str, network: &NetworkRecord) -> Result<()> {
     if !network.managed {
         return Ok(());
     }
-    let rules_result = cleanup_host_rules(name, network);
-    let link_result = if exists(network) {
+    cleanup_host_rules(name, network)?;
+    if exists(network) {
         run_checked("ip", &["link", "delete", "dev", &network.tap_name])
     } else {
         Ok(())
-    };
-    rules_result?;
-    link_result
+    }
 }
 
 pub fn exists(network: &NetworkRecord) -> bool {
@@ -325,7 +326,7 @@ fn install_chain(plan: &ChainPlan) -> Result<()> {
 
 fn cleanup_host_rules(name: &str, network: &NetworkRecord) -> Result<()> {
     cleanup_owned_chains(name)?;
-    remove_legacy_nft_table(name);
+    remove_legacy_nft_table(name)?;
     remove_legacy_direct_rules(network)
 }
 
@@ -371,8 +372,26 @@ fn jump_rule(plan: &ChainPlan) -> Vec<String> {
     .to_vec()
 }
 
-fn remove_legacy_nft_table(name: &str) {
-    let _ = run_checked("nft", &["delete", "table", "ip", &legacy_table_name(name)]);
+fn remove_legacy_nft_table(name: &str) -> Result<()> {
+    let table = legacy_table_name(name);
+    let output = Command::new("nft")
+        .args(["list", "tables"])
+        .output()
+        .context("inspect nftables tables")?;
+    if !output.status.success() {
+        bail!(
+            "nft list tables failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let declaration = format!("table ip {table}");
+    if String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .any(|line| line.trim() == declaration)
+    {
+        run_checked("nft", &["delete", "table", "ip", &table])?;
+    }
+    Ok(())
 }
 
 fn remove_legacy_direct_rules(network: &NetworkRecord) -> Result<()> {
@@ -662,15 +681,43 @@ fn run_checked(program: &str, args: &[&str]) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn published_network(name: &str) -> NetworkRecord {
+        default_network(
+            name,
+            vec![PublishedPort {
+                protocol: "tcp".to_owned(),
+                host_port: 18080,
+                guest_port: 8080,
+            }],
+        )
+    }
+
+    fn plans(name: &str, network: &NetworkRecord) -> Vec<ChainPlan> {
+        chain_plans(name, network, "eth0").unwrap()
+    }
+
+    fn selected_plan<'a>(plans: &'a [ChainPlan], table: &str, builtin: &str) -> &'a ChainPlan {
+        plans
+            .iter()
+            .find(|plan| plan.table == table && plan.builtin == builtin)
+            .unwrap()
+    }
+
+    fn rendered_rules(plan: &ChainPlan) -> String {
+        plan.rules
+            .iter()
+            .map(|rule| rule.join(" "))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     #[test]
     fn default_network_is_deterministic() {
+        let first = default_network("default", vec![]);
+        let replay = default_network("default", vec![]);
         assert_eq!(
-            default_network("default", vec![]).tap_name,
-            default_network("default", vec![]).tap_name
-        );
-        assert_ne!(
-            default_network("default", vec![]).guest_address,
-            default_network("other", vec![]).guest_address
+            serde_json::to_value(first).unwrap(),
+            serde_json::to_value(replay).unwrap()
         );
     }
 
@@ -680,17 +727,35 @@ mod tests {
     }
 
     #[test]
-    fn per_machine_plans_are_deterministic_and_isolated() {
-        let first = chain_plans("first", &default_network("first", vec![]), "eth0").unwrap();
-        let replay = chain_plans("first", &default_network("first", vec![]), "eth0").unwrap();
-        let second = chain_plans("second", &default_network("second", vec![]), "eth0").unwrap();
+    fn per_machine_chain_names_are_deterministic() {
+        let first = chain_bindings("machine")
+            .into_iter()
+            .map(|plan| plan.owned)
+            .collect::<Vec<_>>();
+        let replay = chain_bindings("machine")
+            .into_iter()
+            .map(|plan| plan.owned)
+            .collect::<Vec<_>>();
         assert_eq!(first, replay);
-        assert_ne!(first[0].owned, second[0].owned);
-        assert_ne!(
-            default_network("first", vec![]).guest_address,
-            default_network("second", vec![]).guest_address
-        );
-        assert!(first.iter().all(|plan| plan.owned.len() <= 28));
+    }
+
+    #[test]
+    fn per_machine_chain_names_fit_iptables_limit() {
+        assert!(chain_bindings("machine")
+            .iter()
+            .all(|plan| plan.owned.len() <= 28));
+    }
+
+    #[test]
+    fn per_machine_chain_plans_are_isolated() {
+        let first = plans("first", &default_network("first", vec![]));
+        let second = plans("second", &default_network("second", vec![]));
+        for left in &first {
+            for right in &second {
+                assert_ne!(left.owned, right.owned);
+                assert_ne!(left.jump_comment, right.jump_comment);
+            }
+        }
     }
 
     #[test]
@@ -713,31 +778,94 @@ mod tests {
     }
 
     #[test]
-    fn published_plan_has_external_localhost_and_hairpin_rules() {
-        let network = default_network(
-            "published",
-            vec![PublishedPort {
-                protocol: "tcp".to_owned(),
-                host_port: 18080,
-                guest_port: 8080,
-            }],
-        );
-        let rendered = chain_plans("published", &network, "eth0")
-            .unwrap()
-            .iter()
-            .flat_map(|plan| plan.rules.iter())
-            .map(|rule| rule.join(" "))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(rendered.contains("--dport 18080"));
-        assert!(rendered.contains("--dst-type LOCAL"));
-        assert!(rendered.contains("--to-destination"));
-        assert!(rendered.contains("127.0.0.0/8"));
-        assert!(rendered.contains("--to-source"));
+    fn rule_plan_generation_is_idempotent() {
+        let network = published_network("published");
+        assert_eq!(plans("published", &network), plans("published", &network));
     }
 
     #[test]
-    fn duplicate_host_ports_and_unsupported_protocols_are_rejected() {
+    fn published_external_dnat_rule_is_generated() {
+        let network = published_network("published");
+        let plans = plans("published", &network);
+        let rendered = rendered_rules(selected_plan(&plans, "nat", "PREROUTING"));
+        assert!(rendered.contains("-p tcp --dport 18080"));
+        assert!(rendered.contains("-j DNAT --to-destination"));
+        assert!(rendered.contains(&format!("{}:8080", network.guest_address)));
+    }
+
+    #[test]
+    fn published_localhost_output_dnat_rule_is_generated() {
+        let network = published_network("published");
+        let plans = plans("published", &network);
+        let rendered = rendered_rules(selected_plan(&plans, "nat", "OUTPUT"));
+        assert!(rendered.contains("-m addrtype --dst-type LOCAL"));
+        assert!(rendered.contains("--dport 18080"));
+        assert!(rendered.contains("-j DNAT --to-destination"));
+    }
+
+    #[test]
+    fn loopback_hairpin_snat_rule_is_generated() {
+        let network = published_network("published");
+        let plans = plans("published", &network);
+        let rendered = rendered_rules(selected_plan(&plans, "nat", "POSTROUTING"));
+        assert!(rendered.contains("-s 127.0.0.0/8"));
+        assert!(rendered.contains("-j SNAT --to-source"));
+        assert!(rendered.contains(&network.gateway_address));
+    }
+
+    #[test]
+    fn guest_subnet_masquerade_rule_is_generated() {
+        let network = default_network("machine", vec![]);
+        let plans = plans("machine", &network);
+        let rendered = rendered_rules(selected_plan(&plans, "nat", "POSTROUTING"));
+        assert!(rendered.contains(&format!("-s {}", subnet_cidr(&network))));
+        assert!(rendered.contains("-o eth0"));
+        assert!(rendered.contains("-j MASQUERADE"));
+    }
+
+    #[test]
+    fn guest_forwarding_rule_is_generated() {
+        let network = default_network("machine", vec![]);
+        let plans = plans("machine", &network);
+        let rendered = rendered_rules(selected_plan(&plans, "filter", "FORWARD"));
+        assert!(rendered.contains(&format!(
+            "-i {} -s {}",
+            network.tap_name,
+            subnet_cidr(&network)
+        )));
+        assert!(rendered.contains("-j ACCEPT"));
+    }
+
+    #[test]
+    fn guest_return_path_rule_is_generated() {
+        let network = default_network("machine", vec![]);
+        let plans = plans("machine", &network);
+        let rendered = rendered_rules(selected_plan(&plans, "filter", "FORWARD"));
+        assert!(rendered.contains(&format!(
+            "-o {} -d {}",
+            network.tap_name,
+            subnet_cidr(&network)
+        )));
+        assert!(rendered.contains("--ctstate ESTABLISHED,RELATED"));
+    }
+
+    #[test]
+    fn cleanup_bindings_match_installed_chain_identities() {
+        let network = published_network("published");
+        let installed = plans("published", &network);
+        let cleanup = chain_bindings("published");
+        assert_eq!(installed.len(), cleanup.len());
+        for (installed, cleanup) in installed.iter().zip(cleanup.iter()) {
+            assert_eq!(installed.table, cleanup.table);
+            assert_eq!(installed.builtin, cleanup.builtin);
+            assert_eq!(installed.owned, cleanup.owned);
+            assert_eq!(installed.jump_comment, cleanup.jump_comment);
+            assert_eq!(jump_rule(installed), jump_rule(cleanup));
+        }
+    }
+
+    #[test]
+    fn duplicate_host_ports_are_rejected() {
         let duplicate = default_network(
             "duplicate",
             vec![
@@ -754,7 +882,10 @@ mod tests {
             ],
         );
         assert!(chain_plans("duplicate", &duplicate, "eth0").is_err());
+    }
 
+    #[test]
+    fn unsupported_protocols_are_rejected() {
         let unsupported = default_network(
             "unsupported",
             vec![PublishedPort {
@@ -764,5 +895,46 @@ mod tests {
             }],
         );
         assert!(chain_plans("unsupported", &unsupported, "eth0").is_err());
+    }
+
+    #[test]
+    fn separate_machines_receive_separate_networks() {
+        let first = default_network("first", vec![]);
+        let second = default_network("second", vec![]);
+        assert_ne!(first.tap_name, second.tap_name);
+        assert_ne!(first.guest_mac, second.guest_mac);
+        assert_ne!(first.guest_address, second.guest_address);
+        assert_ne!(first.gateway_address, second.gateway_address);
+    }
+
+    #[test]
+    fn rule_comments_are_stable_and_machine_scoped() {
+        let name = "published";
+        let suffix = chain_suffix(name);
+        let plans = plans(name, &published_network(name));
+        for plan in &plans {
+            assert!(plan.jump_comment.starts_with(&format!("smp:{suffix}:")));
+            for rule in &plan.rules {
+                let comment = rule
+                    .windows(2)
+                    .find(|window| window[0] == "--comment")
+                    .map(|window| window[1].as_str())
+                    .unwrap();
+                assert!(comment.starts_with(&format!("smp:{suffix}:")));
+            }
+        }
+    }
+
+    #[test]
+    fn distinct_machine_names_have_no_chain_collision() {
+        let first = chain_bindings("first")
+            .into_iter()
+            .map(|plan| plan.owned)
+            .collect::<BTreeSet<_>>();
+        let second = chain_bindings("second")
+            .into_iter()
+            .map(|plan| plan.owned)
+            .collect::<BTreeSet<_>>();
+        assert!(first.is_disjoint(&second));
     }
 }

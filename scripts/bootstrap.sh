@@ -47,7 +47,7 @@ if [[ $SKIP_PACKAGES -eq 0 ]]; then
       xz-utils zstd bison flex libelf-dev bc dwarves rsync file kmod procps shellcheck
 fi
 
-for tool in awk curl debugfs df git install iptables iptables-save jq losetup sha256sum shellcheck systemctl tar; do
+for tool in awk curl debugfs df find git grep install ip iptables iptables-save jq losetup nft ps sha256sum shellcheck sort ss systemctl tar xargs; do
     command -v "$tool" >/dev/null || { printf 'missing bootstrap tool: %s\n' "$tool" >&2; exit 69; }
 done
 

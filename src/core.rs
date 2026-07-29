@@ -212,20 +212,44 @@ pub fn start(paths: &RuntimePaths, name: &str, foreground: bool) -> Result<Machi
             save_machine(paths, &mut record)?;
             if !foreground {
                 if let Err(error) = guest::wait_for_ssh(&record, Duration::from_secs(120)) {
-                    record.state = if record
+                    let process_alive = record
                         .process
                         .as_ref()
                         .map(firecracker::verify_process)
                         .transpose()?
-                        .unwrap_or(false)
-                    {
-                        MachineState::Running
+                        .unwrap_or(false);
+                    let cleanup_error = if process_alive {
+                        None
                     } else {
+                        network::cleanup(name, &record.network)
+                            .and_then(|_| safe_remove_file(Path::new(&record.api_socket)))
+                            .err()
+                    };
+                    record.state = if process_alive {
+                        MachineState::Running
+                    } else if cleanup_error.is_some() {
+                        MachineState::Stale
+                    } else {
+                        record.process = None;
+                        for disk in &mut record.disks {
+                            disk.attached = false;
+                        }
                         MachineState::Crashed
                     };
-                    record.last_error = Some(TypedError::new("GUEST_NOT_READY", error.to_string()));
+                    let message = match &cleanup_error {
+                        Some(cleanup_error) => {
+                            format!("{}; failed dead-runtime cleanup: {cleanup_error:#}", error)
+                        }
+                        None => error.to_string(),
+                    };
+                    record.last_error = Some(TypedError::new("GUEST_NOT_READY", message));
                     record.updated_at_unix_ms = now_unix_ms();
                     save_machine(paths, &mut record)?;
+                    if let Some(cleanup_error) = cleanup_error {
+                        bail!(
+                            "guest readiness failed: {error:#}; dead-runtime cleanup also failed: {cleanup_error:#}"
+                        );
+                    }
                     return Err(error);
                 }
                 record.state = MachineState::Ready;
@@ -235,14 +259,26 @@ pub fn start(paths: &RuntimePaths, name: &str, foreground: bool) -> Result<Machi
             Ok(record)
         }
         Err(error) => {
-            let _ = network::cleanup(name, &record.network);
-            record.state = MachineState::Crashed;
-            record.last_error = Some(TypedError::new(
-                "FIRECRACKER_START_FAILED",
-                error.to_string(),
-            ));
+            let cleanup_error = network::cleanup(name, &record.network).err();
+            record.state = if cleanup_error.is_some() {
+                MachineState::Stale
+            } else {
+                MachineState::Crashed
+            };
+            let message = match &cleanup_error {
+                Some(cleanup_error) => {
+                    format!("{}; network cleanup failed: {cleanup_error:#}", error)
+                }
+                None => error.to_string(),
+            };
+            record.last_error = Some(TypedError::new("FIRECRACKER_START_FAILED", message));
             record.updated_at_unix_ms = now_unix_ms();
             save_machine(paths, &mut record)?;
+            if let Some(cleanup_error) = cleanup_error {
+                bail!(
+                    "Firecracker launch failed: {error:#}; network cleanup also failed: {cleanup_error:#}"
+                );
+            }
             Err(error)
         }
     }
@@ -365,7 +401,7 @@ pub fn kill(paths: &RuntimePaths, name: &str) -> Result<MachineRecord> {
 }
 
 fn finish_stopped(paths: &RuntimePaths, record: &mut MachineRecord) -> Result<()> {
-    let _ = network::cleanup(&record.name, &record.network);
+    network::cleanup(&record.name, &record.network)?;
     safe_remove_file(Path::new(&record.api_socket))?;
     record.process = None;
     record.state = MachineState::Stopped;
