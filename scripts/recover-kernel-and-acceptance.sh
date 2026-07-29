@@ -16,7 +16,7 @@ OBSERVED_COMMIT="$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
 [[ -r /var/lib/smp/assets/manifest.json ]] || { printf 'SMP asset manifest is unavailable\n' >&2; exit 66; }
 
 install -d -m 0755 /usr/lib/smp
-for script in repair-kernel-capabilities.sh repair-host-network.sh acceptance.sh prompt2-handoff.sh; do
+for script in module-tree-digest.sh repair-kernel-capabilities.sh repair-host-network.sh acceptance.sh prompt2-handoff.sh; do
     install -m 0755 "$SOURCE_ROOT/scripts/$script" "/usr/lib/smp/$script"
 done
 

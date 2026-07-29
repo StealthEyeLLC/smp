@@ -13,6 +13,7 @@ ASSETS_ROOT=/var/lib/smp/assets
 ETC_ROOT=/etc/smp
 OFFLINE=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MODULE_TREE_DIGEST="$SCRIPT_DIR/module-tree-digest.sh"
 if [[ -d "$SCRIPT_DIR/../assets" ]]; then
     SOURCE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 else
@@ -32,6 +33,10 @@ done
 [[ $(uname -m) == x86_64 ]] || { printf 'SMP canonical assets require x86_64\n' >&2; exit 69; }
 [[ -d "$SOURCE_ROOT/assets/guest" && -d "$SOURCE_ROOT/assets/guest-tools" ]] || {
     printf 'SMP guest asset sources are missing beneath %s\n' "$SOURCE_ROOT" >&2
+    exit 66
+}
+[[ -x $MODULE_TREE_DIGEST ]] || {
+    printf 'SMP module-tree digest helper is unavailable: %s\n' "$MODULE_TREE_DIGEST" >&2
     exit 66
 }
 
@@ -66,7 +71,7 @@ download() {
 
 hash_tree() {
     local directory=$1
-    find "$directory" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1
+    "$MODULE_TREE_DIGEST" normalized "$directory"
 }
 
 printf 'Preparing pinned Firecracker %s\n' "$FIRECRACKER_VERSION"
@@ -256,6 +261,7 @@ jq -n \
   --arg rootfsVersion "$DEBIAN_VERSION" \
   --arg rootfsProv "$ASSETS_ROOT/provenance/debian-packages.tsv" \
   --arg moduleTreeSha "$MODULE_TREE_SHA" \
+  --arg moduleTreeDigestAlgorithm "sha256-relative-regular-files-v1" \
   --arg fcAsset "$FC_ARCHIVE" \
   --arg fcAssetSha "$FC_ARCHIVE_SHA" \
   --arg kernelUrl "$KERNEL_URL" \
@@ -270,7 +276,8 @@ jq -n \
     firecracker:{path:$fcPath,sha256:$fcSha,version:$fcVersion,provenancePath:$fcProv},
     kernel:{path:$kernelPath,sha256:$kernelSha,version:$kernelVersion,provenancePath:$kernelProv},
     rootfs:{path:$rootfsPath,sha256:$rootfsSha,version:$rootfsVersion,provenancePath:$rootfsProv},
-    moduleTreeSha256:$moduleTreeSha,firecrackerReleaseAsset:$fcAsset,
+    moduleTreeSha256:$moduleTreeSha,moduleTreeDigestAlgorithm:$moduleTreeDigestAlgorithm,
+    firecrackerReleaseAsset:$fcAsset,
     firecrackerReleaseSha256:$fcAssetSha,kernelSourceUrl:$kernelUrl,
     kernelConfigSha256:$kernelConfigSha,debianSuite:$debianSuite,
     debianVersion:$debianVersion,debianMirror:$debianMirror,

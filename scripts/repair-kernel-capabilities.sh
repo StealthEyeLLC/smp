@@ -6,9 +6,15 @@ KERNEL_VERSION=6.1.177
 ASSETS_ROOT=/var/lib/smp/assets
 BUILD_COMMIT=${1:-unknown}
 MIN_FREE_BYTES=$((10 * 1024 * 1024 * 1024))
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MODULE_TREE_DIGEST="$SCRIPT_DIR/module-tree-digest.sh"
 
 [[ $(id -u) -eq 0 ]] || { printf 'repair-kernel-capabilities.sh requires root\n' >&2; exit 77; }
 [[ $BUILD_COMMIT =~ ^[0-9a-f]{40}$ ]] || { printf 'expected full build commit SHA\n' >&2; exit 64; }
+[[ -x $MODULE_TREE_DIGEST ]] || {
+    printf 'SMP module-tree digest helper is unavailable: %s\n' "$MODULE_TREE_DIGEST" >&2
+    exit 66
+}
 for tool in awk cp cut depmod df e2fsck find grep install jq make mount mv nproc rm rsync sha256sum sort sync tar umount xargs; do
     command -v "$tool" >/dev/null || { printf 'missing kernel repair tool: %s\n' "$tool" >&2; exit 69; }
 done
@@ -39,7 +45,7 @@ printf 'Kernel-repair free space: %s bytes\n' "$AVAILABLE_BYTES"
 
 hash_tree() {
     local directory=$1
-    find "$directory" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1
+    "$MODULE_TREE_DIGEST" normalized "$directory"
 }
 
 EXPECTED_ARCHIVE_SHA="$(awk -v file="linux-${KERNEL_VERSION}.tar.xz" '$2 == file {print $1; exit}' "$SUMS")"
@@ -178,11 +184,13 @@ jq -n \
   --arg rootfsSha256 "$ROOTFS_SHA" \
   --arg priorRootfsProvenancePath "$PRIOR_ROOTFS_PROVENANCE" \
   --arg kernelConfigSha256 "$KERNEL_CONFIG_SHA" \
+  --arg moduleTreeDigestAlgorithm "sha256-relative-regular-files-v1" \
   '{schemaVersion:$schemaVersion,buildCommit:$buildCommit,repairedAt:$repairedAt,
     priorKernelSha256:$priorKernelSha256,kernelSha256:$kernelSha256,
     priorModuleTreeSha256:$priorModuleTreeSha256,moduleTreeSha256:$moduleTreeSha256,
     priorRootfsSha256:$priorRootfsSha256,rootfsSha256:$rootfsSha256,
     priorRootfsProvenancePath:$priorRootfsProvenancePath,kernelConfigSha256:$kernelConfigSha256,
+    moduleTreeDigestAlgorithm:$moduleTreeDigestAlgorithm,
     enabledCapabilities:["CONFIG_NF_TABLES","CONFIG_NF_TABLES_IPV4","CONFIG_NF_TABLES_IPV6","CONFIG_NF_TABLES_INET","CONFIG_DUMMY"]}' \
   > "${REVISION_PROVENANCE}.new"
 

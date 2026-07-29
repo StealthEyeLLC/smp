@@ -12,9 +12,16 @@ PRIMARY=smp-cert-persistent
 CERT_MACHINES=(smp-cert-disposable smp-cert-no-fallback smp-cert-isolated smp-cert-persistent)
 STARTED_AT="$(date --utc +%Y-%m-%dT%H:%M:%SZ)"
 ARCHIVE="$RESULT_ROOT/archive/final-recovery-$(date --utc +%Y%m%dT%H%M%SZ)"
+MODULE_TREE_DIGEST="$SOURCE_ROOT/scripts/module-tree-digest.sh"
+LEGACY_RECORDED_MODULE_TREE_SHA=ac0f97629f17612332ebe6b469a46195dda39bf7ff0725192908886acbe59eb4
+LEGACY_CANONICAL_PATH_MODULE_TREE_SHA=fc6cc176c8114a071a50f4f53665b278077a1809005024975089b036b6d6c2b8
 
 [[ $(id -u) -eq 0 ]] || { printf 'recover-firecracker-acceptance.sh requires root\n' >&2; exit 77; }
 [[ $EXPECTED_COMMIT =~ ^[0-9a-f]{40}$ ]] || { printf 'expected full recovery commit SHA\n' >&2; exit 64; }
+[[ -x $MODULE_TREE_DIGEST ]] || {
+    printf 'SMP module-tree digest helper is unavailable: %s\n' "$MODULE_TREE_DIGEST" >&2
+    exit 66
+}
 OBSERVED_COMMIT="$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
 OBSERVED_TREE="$(git -C "$SOURCE_ROOT" rev-parse 'HEAD^{tree}')"
 [[ $OBSERVED_COMMIT == "$EXPECTED_COMMIT" ]] || {
@@ -75,6 +82,7 @@ for path in \
   /etc/smp/install.json \
   /var/lib/smp/assets/manifest.json \
   /var/lib/smp/assets/provenance/kernel-capabilities-revision.json \
+  /var/lib/smp/assets/provenance/module-tree.sha256 \
   "$ACCEPTANCE_ROOT/result.json" \
   "$ACCEPTANCE_ROOT/stdout.log" \
   "$ACCEPTANCE_ROOT/stderr.log" \
@@ -121,10 +129,6 @@ MODULE_PROVENANCE=$ASSETS_ROOT/provenance/module-tree.sha256
     printf 'corrected canonical asset metadata or retained assets are unavailable\n' >&2
     exit 66
 }
-hash_tree() {
-    local directory=$1
-    find "$directory" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1
-}
 jq -e '
   .schemaVersion == 1 and
   .architecture == "x86_64" and
@@ -135,13 +139,13 @@ jq -e '
   .kernel.version == "6.1.177" and
   .kernel.sha256 == "d1134da8fddbebbb0212f193398e64e60533a9d5d2363cc62e361c2e4bae95fb" and
   .kernelConfigSha256 == "f40b6317e62eb55f9b019e1d0359350c505688b5cf362cc32d8b541cc9844df4" and
-  .moduleTreeSha256 == "ac0f97629f17612332ebe6b469a46195dda39bf7ff0725192908886acbe59eb4" and
+  (.moduleTreeSha256 | test("^[0-9a-f]{64}$")) and
   .rootfs.sha256 == "501d447bcaf180a50a834f438e88d2733aa309d656d19bb9f2a0433536f99da5" and
   .debianVersion == "13.6" and .debianSuite == "trixie"' "$MANIFEST" >/dev/null
 jq -e '
   .schemaVersion == 1 and
   .kernelSha256 == "d1134da8fddbebbb0212f193398e64e60533a9d5d2363cc62e361c2e4bae95fb" and
-  .moduleTreeSha256 == "ac0f97629f17612332ebe6b469a46195dda39bf7ff0725192908886acbe59eb4" and
+  (.moduleTreeSha256 | test("^[0-9a-f]{64}$")) and
   .rootfsSha256 == "501d447bcaf180a50a834f438e88d2733aa309d656d19bb9f2a0433536f99da5" and
   .kernelConfigSha256 == "f40b6317e62eb55f9b019e1d0359350c505688b5cf362cc32d8b541cc9844df4" and
   (.enabledCapabilities | index("CONFIG_NF_TABLES") != null) and
@@ -154,11 +158,66 @@ FIRECRACKER_ARCHIVE_SHA="$(sha256sum "$FIRECRACKER_ARCHIVE" | cut -d' ' -f1)"
     printf 'Firecracker archive digest mismatch: %s\n' "$FIRECRACKER_ARCHIVE_SHA" >&2
     exit 65
 }
-MODULE_TREE_SHA="$(hash_tree "$KERNEL_MODULES")"
-[[ $MODULE_TREE_SHA == ac0f97629f17612332ebe6b469a46195dda39bf7ff0725192908886acbe59eb4 ]] || {
-    printf 'kernel module-tree digest mismatch: %s\n' "$MODULE_TREE_SHA" >&2
-    exit 65
-}
+MANIFEST_MODULE_TREE_SHA="$(jq -er '.moduleTreeSha256' "$MANIFEST")"
+REVISION_MODULE_TREE_SHA="$(jq -er '.moduleTreeSha256' "$REVISION")"
+PROVENANCE_MODULE_TREE_SHA="$(awk 'NR == 1 {print $1}' "$MODULE_PROVENANCE")"
+MANIFEST_MODULE_TREE_ALGORITHM="$(jq -r '.moduleTreeDigestAlgorithm // empty' "$MANIFEST")"
+REVISION_MODULE_TREE_ALGORITHM="$(jq -r '.moduleTreeDigestAlgorithm // empty' "$REVISION")"
+MODULE_TREE_SHA="$("$MODULE_TREE_DIGEST" normalized "$KERNEL_MODULES")"
+
+if [[ $MANIFEST_MODULE_TREE_SHA != "$MODULE_TREE_SHA" ||
+      $REVISION_MODULE_TREE_SHA != "$MODULE_TREE_SHA" ||
+      $PROVENANCE_MODULE_TREE_SHA != "$MODULE_TREE_SHA" ||
+      $MANIFEST_MODULE_TREE_ALGORITHM != sha256-relative-regular-files-v1 ||
+      $REVISION_MODULE_TREE_ALGORITHM != sha256-relative-regular-files-v1 ]]; then
+    for recorded in "$MANIFEST_MODULE_TREE_SHA" "$REVISION_MODULE_TREE_SHA" "$PROVENANCE_MODULE_TREE_SHA"; do
+        [[ $recorded == "$LEGACY_RECORDED_MODULE_TREE_SHA" || $recorded == "$MODULE_TREE_SHA" ]] || {
+            printf 'kernel module-tree metadata is neither the certified legacy identity nor the normalized identity: %s\n' "$recorded" >&2
+            exit 65
+        }
+    done
+    LEGACY_OBSERVED_MODULE_TREE_SHA="$("$MODULE_TREE_DIGEST" legacy "$KERNEL_MODULES")"
+    [[ $LEGACY_OBSERVED_MODULE_TREE_SHA == "$LEGACY_CANONICAL_PATH_MODULE_TREE_SHA" ]] || {
+        printf 'kernel module-tree legacy relocation anchor mismatch: %s\n' "$LEGACY_OBSERVED_MODULE_TREE_SHA" >&2
+        exit 65
+    }
+
+    MIGRATED_AT="$(date --utc +%Y-%m-%dT%H:%M:%SZ)"
+    jq \
+      --arg moduleSha "$MODULE_TREE_SHA" \
+      --arg algorithm "sha256-relative-regular-files-v1" \
+      '.moduleTreeSha256 = $moduleSha |
+       .moduleTreeDigestAlgorithm = $algorithm' \
+      "$MANIFEST" > "$MANIFEST.new"
+    jq \
+      --arg legacySha "$LEGACY_RECORDED_MODULE_TREE_SHA" \
+      --arg legacyCanonicalSha "$LEGACY_CANONICAL_PATH_MODULE_TREE_SHA" \
+      --arg moduleSha "$MODULE_TREE_SHA" \
+      --arg algorithm "sha256-relative-regular-files-v1" \
+      --arg migrationCommit "$EXPECTED_COMMIT" \
+      --arg migratedAt "$MIGRATED_AT" \
+      '.legacyModuleTreeSha256 = (.legacyModuleTreeSha256 // $legacySha) |
+       .legacyCanonicalPathModuleTreeSha256 = (.legacyCanonicalPathModuleTreeSha256 // $legacyCanonicalSha) |
+       .moduleTreeSha256 = $moduleSha |
+       .moduleTreeDigestAlgorithm = $algorithm |
+       .moduleTreeDigestMigrationCommit = (.moduleTreeDigestMigrationCommit // $migrationCommit) |
+       .moduleTreeDigestMigratedAt = (.moduleTreeDigestMigratedAt // $migratedAt)' \
+      "$REVISION" > "$REVISION.new"
+    printf '%s  modules-6.1.177\n' "$MODULE_TREE_SHA" > "$MODULE_PROVENANCE.new"
+    chmod 0600 "$MANIFEST.new" "$REVISION.new" "$MODULE_PROVENANCE.new"
+    mv -f "$MODULE_PROVENANCE.new" "$MODULE_PROVENANCE"
+    mv -f "$REVISION.new" "$REVISION"
+    mv -f "$MANIFEST.new" "$MANIFEST"
+    printf 'Migrated path-dependent module-tree metadata without rebuilding kernel assets\n'
+    printf 'normalized_module_tree_sha256=%s\n' "$MODULE_TREE_SHA"
+fi
+
+jq -e --arg moduleSha "$MODULE_TREE_SHA" \
+  '.moduleTreeSha256 == $moduleSha and .moduleTreeDigestAlgorithm == "sha256-relative-regular-files-v1"' \
+  "$MANIFEST" >/dev/null
+jq -e --arg moduleSha "$MODULE_TREE_SHA" \
+  '.moduleTreeSha256 == $moduleSha and .moduleTreeDigestAlgorithm == "sha256-relative-regular-files-v1"' \
+  "$REVISION" >/dev/null
 [[ "$(awk 'NR == 1 {print $1}' "$KERNEL_CONFIG_PROVENANCE")" == f40b6317e62eb55f9b019e1d0359350c505688b5cf362cc32d8b541cc9844df4 ]] || {
     printf 'kernel configuration provenance digest mismatch\n' >&2
     exit 65

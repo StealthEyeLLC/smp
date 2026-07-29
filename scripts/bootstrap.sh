@@ -122,7 +122,7 @@ install -d -m 0755 /usr/local/bin /usr/lib/smp /usr/lib/smp/assets /etc/smp /etc
 install -d -m 0700 /var/lib/smp /var/lib/smp/machines /var/lib/smp/assets /var/lib/smp/requests /var/lib/smp/results /var/lib/smp/provenance /run/smp
 install -m 0755 "$CANDIDATE" /usr/local/bin/smp.new
 mv -f /usr/local/bin/smp.new /usr/local/bin/smp
-for script in build-assets.sh create-seed.sh repair-rootfs.sh repair-host-network.sh test-repository.sh acceptance.sh prompt2-handoff.sh recover-firecracker-acceptance.sh uninstall.sh; do
+for script in build-assets.sh create-seed.sh module-tree-digest.sh repair-rootfs.sh repair-host-network.sh test-repository.sh acceptance.sh prompt2-handoff.sh recover-firecracker-acceptance.sh uninstall.sh; do
     install -m 0755 "$BUILD_SOURCE/scripts/$script" "/usr/lib/smp/$script"
 done
 rm -rf /usr/lib/smp/assets.new

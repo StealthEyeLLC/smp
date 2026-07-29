@@ -36,6 +36,35 @@ for script in scripts/*.sh assets/guest/*.sh; do
 done
 shellcheck --severity=error scripts/*.sh assets/guest/*.sh
 
+MODULE_DIGEST_FIXTURE="$(mktemp -d)"
+cleanup_module_digest_fixture() {
+    rm -rf "$MODULE_DIGEST_FIXTURE"
+}
+trap cleanup_module_digest_fixture EXIT
+mkdir -p "$MODULE_DIGEST_FIXTURE/first/nested" "$MODULE_DIGEST_FIXTURE/second"
+printf 'alpha\n' > "$MODULE_DIGEST_FIXTURE/first/module.ko"
+printf 'beta\n' > "$MODULE_DIGEST_FIXTURE/first/nested/modules.dep"
+cp -a "$MODULE_DIGEST_FIXTURE/first/." "$MODULE_DIGEST_FIXTURE/second/"
+FIRST_NORMALIZED="$(scripts/module-tree-digest.sh normalized "$MODULE_DIGEST_FIXTURE/first")"
+SECOND_NORMALIZED="$(scripts/module-tree-digest.sh normalized "$MODULE_DIGEST_FIXTURE/second")"
+FIRST_LEGACY="$(scripts/module-tree-digest.sh legacy "$MODULE_DIGEST_FIXTURE/first")"
+SECOND_LEGACY="$(scripts/module-tree-digest.sh legacy "$MODULE_DIGEST_FIXTURE/second")"
+[[ $FIRST_NORMALIZED =~ ^[0-9a-f]{64}$ && $FIRST_NORMALIZED == "$SECOND_NORMALIZED" ]] || {
+    printf 'normalized module-tree digest is not relocation invariant\n' >&2
+    exit 1
+}
+[[ $FIRST_LEGACY != "$SECOND_LEGACY" ]] || {
+    printf 'legacy module-tree digest fixture did not expose path dependence\n' >&2
+    exit 1
+}
+printf 'gamma\n' > "$MODULE_DIGEST_FIXTURE/second/module.ko"
+[[ "$(scripts/module-tree-digest.sh normalized "$MODULE_DIGEST_FIXTURE/second")" != "$FIRST_NORMALIZED" ]] || {
+    printf 'normalized module-tree digest did not detect a content change\n' >&2
+    exit 1
+}
+cleanup_module_digest_fixture
+trap - EXIT
+
 jq -e '.displayName == "SMP" and .toolContract.onlyTool == "go" and .toolContract.canonicalCallableIdentity == "smp.go"' plugin/SMP.json >/dev/null
 jq -e '.properties.schemaVersion.const == 1 and (.required | index("operation")) != null' plugin/smp.go.schema.json >/dev/null
 
