@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smp.stealtheye.invalid/schemas/go-response-v1.json",
+  "title": "smp.go response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "requestId",
+    "state",
+    "timedOut",
+    "stdout",
+    "stderr",
+    "outputEncoding",
+    "totalStdoutBytes",
+    "totalStderrBytes",
+    "stdoutComplete",
+    "stderrComplete"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "requestId": {
+      "type": "string"
+    },
+    "state": {
+      "enum": [
+        "accepted",
+        "running",
+        "completed",
+        "failed",
+        "cancelled",
+        "timed_out",
+        "stale"
+      ]
+    },
+    "exitCode": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "timedOut": {
+      "type": "boolean"
+    },
+    "stdout": {
+      "type": "string"
+    },
+    "stderr": {
+      "type": "string"
+    },
+    "outputEncoding": {
+      "const": "base64"
+    },
+    "totalStdoutBytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "totalStderrBytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "stdoutComplete": {
+      "type": "boolean"
+    },
+    "stderrComplete": {
+      "type": "boolean"
+    },
+    "resultHandle": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "machineState": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "result": {},
+    "error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

@@ -1,0 +1,38 @@
+[Unit]
+Description=SMP standalone Firecracker controller
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/usr/local/bin/smp
+ConditionPathExists=/dev/kvm
+ConditionPathExists=/dev/net/tun
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/var/lib/smp
+RuntimeDirectory=smp
+RuntimeDirectoryMode=0755
+StateDirectory=smp
+StateDirectoryMode=0700
+UMask=0077
+ExecStart=/usr/local/bin/smp serve --socket /run/smp/mcp.sock --listen 127.0.0.1:17777
+ExecStartPost=/usr/bin/curl --fail --silent --show-error --unix-socket /run/smp/mcp.sock http://localhost/healthz
+Restart=on-failure
+RestartSec=2s
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+TimeoutStartSec=30s
+TimeoutStopSec=30s
+KillMode=process
+Delegate=yes
+NoNewPrivileges=no
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectSystem=full
+ReadWritePaths=/etc/smp /var/lib/smp /run/smp
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

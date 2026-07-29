@@ -1,0 +1,9 @@
+tunnel: REPLACE_WITH_SMP_TUNNEL_ID
+credentials-file: /etc/smp/credentials/tunnel.json
+protocol: quic
+no-autoupdate: true
+loglevel: info
+ingress:
+  - hostname: REPLACE_WITH_PRIVATE_SMP_HOSTNAME
+    service: http://127.0.0.1:17777
+  - service: http_status:404

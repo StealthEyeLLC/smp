@@ -55,6 +55,27 @@ impl Paths {
         Ok(paths)
     }
 
+    pub fn rooted(root: &Path) -> Result<Self> {
+        validate_absolute_clean(root)?;
+        let config = root.join("etc/smp");
+        let state = root.join("var/lib/smp");
+        let paths = Self {
+            binary: root.join("usr/local/bin/smp"),
+            lib: root.join("usr/lib/smp"),
+            credentials: config.join("credentials"),
+            assets: state.join("assets"),
+            machines: state.join("machines"),
+            requests: state.join("requests"),
+            results: state.join("results"),
+            provenance: state.join("provenance"),
+            runtime: root.join("run/smp"),
+            config,
+            state,
+        };
+        paths.validate()?;
+        Ok(paths)
+    }
+
     pub fn validate(&self) -> Result<()> {
         for path in [
             &self.binary,

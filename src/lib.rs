@@ -1,8 +1,17 @@
+pub mod assets;
 pub mod cli;
 pub mod doctor;
 pub mod error;
+pub mod firecracker;
+pub mod guest;
+pub mod machine;
 pub mod model;
+pub mod network;
 pub mod paths;
+pub mod process;
+pub mod remote;
+pub mod server;
+pub mod storage;
 pub mod util;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

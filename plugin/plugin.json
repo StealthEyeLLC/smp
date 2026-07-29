@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "displayName": "SMP",
+  "namespace": "smp",
+  "description": "Standalone Smallest Maximum Power Firecracker control",
+  "endpoint": "https://REPLACE_WITH_PRIVATE_SMP_HOSTNAME/mcp",
+  "authentication": {
+    "type": "bearer",
+    "credentialPlaceholder": "REPLACE_DURING_PRIVATE_REGISTRATION"
+  },
+  "healthCheck": {
+    "method": "GET",
+    "path": "/healthz"
+  },
+  "readinessCheck": {
+    "method": "GET",
+    "path": "/readyz"
+  },
+  "tools": [
+    {
+      "name": "go",
+      "callableIdentity": "smp.go",
+      "description": "Execute one versioned SMP operation; use describe for the live open operation catalog.",
+      "requestSchema": "schemas/go-request.schema.json",
+      "responseSchema": "schemas/go-response.schema.json"
+    }
+  ]
+}

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::path::PathBuf;
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MachineMode {
     Persistent,
@@ -32,7 +32,7 @@ pub enum MachineState {
     Stale,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PortProtocol {
     Tcp,
@@ -210,6 +210,9 @@ pub struct RemoteResponse {
     pub timed_out: bool,
     pub stdout: String,
     pub stderr: String,
+    pub output_encoding: String,
+    pub total_stdout_bytes: u64,
+    pub total_stderr_bytes: u64,
     pub stdout_complete: bool,
     pub stderr_complete: bool,
     pub result_handle: Option<String>,
@@ -228,6 +231,9 @@ impl RemoteResponse {
             timed_out: false,
             stdout: String::new(),
             stderr: String::new(),
+            output_encoding: "base64".to_owned(),
+            total_stdout_bytes: 0,
+            total_stderr_bytes: 0,
             stdout_complete: true,
             stderr_complete: true,
             result_handle: None,
@@ -244,6 +250,7 @@ pub struct RequestRecord {
     pub schema_version: u32,
     pub request_id: String,
     pub request_digest: String,
+    pub normalized_request: RemoteRequest,
     pub operation: String,
     pub state: ResultState,
     pub process: Option<ProcessIdentity>,

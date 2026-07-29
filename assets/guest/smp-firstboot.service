@@ -1,0 +1,16 @@
+[Unit]
+Description=SMP seed initialization
+DefaultDependencies=no
+After=local-fs.target systemd-udev-settle.service
+Before=network-pre.target ssh.service
+Wants=systemd-udev-settle.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/smp-guest/smp-firstboot
+RemainAfterExit=no
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

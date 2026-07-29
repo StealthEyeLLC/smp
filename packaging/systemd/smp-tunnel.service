@@ -1,0 +1,28 @@
+[Unit]
+Description=SMP dedicated secure tunnel
+After=network-online.target smp.service
+Wants=network-online.target
+Requires=smp.service
+ConditionPathExists=/etc/smp/tunnel.yml
+ConditionPathExists=/etc/smp/credentials/tunnel.json
+
+[Service]
+Type=simple
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/bin/cloudflared --config /etc/smp/tunnel.yml tunnel run
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=20s
+KillMode=process
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadOnlyPaths=/etc/smp
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
