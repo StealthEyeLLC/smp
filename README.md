@@ -29,7 +29,7 @@ External operating systems, kernels, Firecracker, standard packages, language to
 ## Canonical documents
 
 1. [SMP Constitution](docs/00-SMP-CONSTITUTION.md) — binding project laws, definitions, constraints, and decision rules.
-2. [Firecracker God-Mode Base](docs/01-FIRECRACKER-GOD-MODE-BASE.md) — complete contract for the first product.
+2. [Firecracker God-Mode Base](docs/01-FIRECRACKER-GOD-MODE-BASE.md) — complete contract for the first product, including its standalone remote-control path.
 3. [Build and Acceptance Order](docs/02-BUILD-AND-ACCEPTANCE-ORDER.md) — exact implementation sequence and completion gates.
 
 ## First product definition
@@ -38,6 +38,30 @@ The first product must boot a Firecracker microVM and provide unrestricted UID 0
 
 The guest is a virtual machine, not a container. Its root authority ends at the hardware and resources presented to the microVM. Host resources are not silently exposed, and host authority is not part of the guest-root contract.
 
+## ChatGPT control
+
+SMP includes its own optional standalone ChatGPT connection. It does not require Baby, another StealthEye control plane, or a collection of per-operation plugin tools.
+
+The official integration exposes exactly one callable tool:
+
+```text
+smp.go
+```
+
+Every remote SMP capability is expressed through that one stable interface. New SMP features extend the request schema instead of adding more callable tools.
+
+Canonical path:
+
+```text
+ChatGPT -> smp.go -> SMP on the authorized VPS -> Firecracker
+```
+
+Local SMP use does not require ChatGPT or a plugin:
+
+```bash
+sudo smp up
+```
+
 ## Project status
 
-Specification foundation only. No implementation has been certified yet.
+Canonical specification foundation in progress. No implementation has been certified yet.
