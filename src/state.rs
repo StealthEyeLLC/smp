@@ -1,4 +1,6 @@
-use crate::model::{MachineRecord, MachineState, RequestRecord, ResultRecord, MACHINE_SCHEMA_VERSION};
+use crate::model::{
+    MachineRecord, MachineState, RequestRecord, ResultRecord, MACHINE_SCHEMA_VERSION,
+};
 use crate::util::{atomic_write_json, read_json, validate_machine_name};
 use anyhow::{bail, Context, Result};
 use fs2::FileExt;
@@ -198,7 +200,10 @@ pub fn list_machines(paths: &RuntimePaths) -> Result<Vec<MachineRecord>> {
                     process: None,
                     created_at_unix_ms: 0,
                     updated_at_unix_ms: 0,
-                    last_error: Some(crate::model::TypedError::new("CORRUPT_MACHINE_RECORD", error.to_string())),
+                    last_error: Some(crate::model::TypedError::new(
+                        "CORRUPT_MACHINE_RECORD",
+                        error.to_string(),
+                    )),
                     raw: Default::default(),
                 });
             }
@@ -277,7 +282,10 @@ mod tests {
             ..RuntimePaths::default()
         };
         assert!(paths.machine_dir("../escape").is_err());
-        assert_eq!(paths.machine_dir("good").unwrap(), PathBuf::from("/tmp/smp-test/machines/good"));
+        assert_eq!(
+            paths.machine_dir("good").unwrap(),
+            PathBuf::from("/tmp/smp-test/machines/good")
+        );
     }
 
     #[test]

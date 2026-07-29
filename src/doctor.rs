@@ -42,8 +42,7 @@ pub fn run_doctor(paths: &RuntimePaths, fix: bool) -> Result<DoctorReport> {
         }
         let forwarding = fs::read_to_string("/proc/sys/net/ipv4/ip_forward").unwrap_or_default();
         if forwarding.trim() != "1" {
-            fs::write("/proc/sys/net/ipv4/ip_forward", b"1\n")
-                .context("enable IPv4 forwarding")?;
+            fs::write("/proc/sys/net/ipv4/ip_forward", b"1\n").context("enable IPv4 forwarding")?;
             changed.push("enabled net.ipv4.ip_forward".to_owned());
         }
     }
@@ -186,7 +185,9 @@ fn command_check(name: &str, command: &str) -> DoctorCheck {
 }
 
 fn service_check(name: &str, service: &str) -> DoctorCheck {
-    let output = Command::new("systemctl").args(["is-active", service]).output();
+    let output = Command::new("systemctl")
+        .args(["is-active", service])
+        .output();
     let (ok, detail) = match output {
         Ok(output) => (
             output.status.success(),

@@ -48,7 +48,10 @@ pub fn validate_guest_path(path: &str) -> Result<()> {
         bail!("guest path must be absolute");
     }
     for component in value.components() {
-        if matches!(component, Component::ParentDir | Component::CurDir | Component::Prefix(_)) {
+        if matches!(
+            component,
+            Component::ParentDir | Component::CurDir | Component::Prefix(_)
+        ) {
             bail!("guest path contains a forbidden component");
         }
     }
@@ -138,7 +141,12 @@ pub fn process_executable(pid: u32) -> Result<PathBuf> {
     fs::read_link(format!("/proc/{pid}/exe")).context("read process executable")
 }
 
-pub fn process_matches(pid: u32, start_time_ticks: u64, executable: &Path, expected_sha256: &str) -> Result<bool> {
+pub fn process_matches(
+    pid: u32,
+    start_time_ticks: u64,
+    executable: &Path,
+    expected_sha256: &str,
+) -> Result<bool> {
     if process_start_time_ticks(pid).ok() != Some(start_time_ticks) {
         return Ok(false);
     }

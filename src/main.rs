@@ -188,7 +188,10 @@ fn main() {
         Ok(code) => std::process::exit(code),
         Err(error) => {
             if cli.json {
-                println!("{}", json!({"ok": false, "error": {"code": "SMP_COMMAND_FAILED", "message": error.to_string()}}));
+                println!(
+                    "{}",
+                    json!({"ok": false, "error": {"code": "SMP_COMMAND_FAILED", "message": error.to_string()}})
+                );
             } else {
                 eprintln!("smp: {error:#}");
             }
@@ -210,19 +213,36 @@ fn run(cli: &Cli, paths: &RuntimePaths) -> Result<i32> {
         }
         Command::Ssh { name } => core::ssh(paths, name),
         Command::Exec { name, tty, argv } => core::exec(paths, name, argv, *tty),
-        Command::Cp { name, source, destination } => {
+        Command::Cp {
+            name,
+            source,
+            destination,
+        } => {
             core::copy(paths, name, source, destination)?;
-            print_value(cli.json, &json!({"copied": true, "source": source, "destination": destination}))?;
+            print_value(
+                cli.json,
+                &json!({"copied": true, "source": source, "destination": destination}),
+            )?;
             Ok(0)
         }
-        Command::Logs { name, follow, lines } => core::logs(paths, name, *follow, *lines),
+        Command::Logs {
+            name,
+            follow,
+            lines,
+        } => core::logs(paths, name, *follow, *lines),
         Command::Console { name } => core::console(paths, name),
         Command::Status { name } | Command::Inspect { name } => {
             print_value(cli.json, &core::status(paths, name)?)?;
             Ok(0)
         }
-        Command::Wait { name, timeout_seconds } => {
-            print_value(cli.json, &core::wait(paths, name, Duration::from_secs(*timeout_seconds))?)?;
+        Command::Wait {
+            name,
+            timeout_seconds,
+        } => {
+            print_value(
+                cli.json,
+                &core::wait(paths, name, Duration::from_secs(*timeout_seconds))?,
+            )?;
             Ok(0)
         }
         Command::Stop { name } => {
@@ -235,7 +255,10 @@ fn run(cli: &Cli, paths: &RuntimePaths) -> Result<i32> {
         }
         Command::Reboot { name } => {
             let (old, machine) = core::reboot(paths, name)?;
-            print_value(cli.json, &json!({"oldProcess": old, "newProcess": machine.process, "machine": machine}))?;
+            print_value(
+                cli.json,
+                &json!({"oldProcess": old, "newProcess": machine.process, "machine": machine}),
+            )?;
             Ok(0)
         }
         Command::Destroy { name, force } => {
@@ -253,7 +276,14 @@ fn run(cli: &Cli, paths: &RuntimePaths) -> Result<i32> {
             print_value(cli.json, &report)?;
             Ok(if healthy { 0 } else { 2 })
         }
-        Command::Api { name, method, path, headers, body, body_base64 } => {
+        Command::Api {
+            name,
+            method,
+            path,
+            headers,
+            body,
+            body_base64,
+        } => {
             if body.is_some() && body_base64.is_some() {
                 bail!("use only one of --body or --body-base64");
             }
@@ -264,7 +294,10 @@ fn run(cli: &Cli, paths: &RuntimePaths) -> Result<i32> {
             };
             let (status, response) = core::api(paths, name, method, path, &headers, &body)?;
             if cli.json {
-                print_value(true, &json!({"httpStatus": status, "bodyBase64": BASE64.encode(response)}))?;
+                print_value(
+                    true,
+                    &json!({"httpStatus": status, "bodyBase64": BASE64.encode(response)}),
+                )?;
             } else {
                 println!("HTTP {status}");
                 std::io::Write::write_all(&mut std::io::stdout(), &response)?;
@@ -276,7 +309,10 @@ fn run(cli: &Cli, paths: &RuntimePaths) -> Result<i32> {
             Ok(0)
         }
         Command::Version => {
-            print_value(cli.json, &json!({"version": SMP_VERSION, "buildCommit": BUILD_COMMIT}))?;
+            print_value(
+                cli.json,
+                &json!({"version": SMP_VERSION, "buildCommit": BUILD_COMMIT}),
+            )?;
             Ok(0)
         }
         Command::Serve { listen } => {

@@ -1,4 +1,6 @@
-use crate::model::{AssetIdentity, DEBIAN_SUITE, DEBIAN_VERSION, FIRECRACKER_VERSION, KERNEL_VERSION};
+use crate::model::{
+    AssetIdentity, DEBIAN_SUITE, DEBIAN_VERSION, FIRECRACKER_VERSION, KERNEL_VERSION,
+};
 use crate::state::RuntimePaths;
 use crate::util::{read_json, sha256_file};
 use anyhow::{bail, Context, Result};
@@ -36,10 +38,16 @@ impl AssetManifest {
             bail!("unsupported asset architecture {}", self.architecture);
         }
         if self.firecracker.version != FIRECRACKER_VERSION {
-            bail!("expected Firecracker {FIRECRACKER_VERSION}, found {}", self.firecracker.version);
+            bail!(
+                "expected Firecracker {FIRECRACKER_VERSION}, found {}",
+                self.firecracker.version
+            );
         }
         if self.kernel.version != KERNEL_VERSION {
-            bail!("expected Linux {KERNEL_VERSION}, found {}", self.kernel.version);
+            bail!(
+                "expected Linux {KERNEL_VERSION}, found {}",
+                self.kernel.version
+            );
         }
         if self.debian_suite != DEBIAN_SUITE || self.debian_version != DEBIAN_VERSION {
             bail!(

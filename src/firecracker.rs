@@ -56,7 +56,10 @@ pub fn generate_config(record: &MachineRecord) -> Result<Value> {
     let mut boot_args = record.boot_args.clone();
     match record.transport {
         VirtioTransport::Pci => {
-            if !boot_args.split_whitespace().any(|value| value.starts_with("pci=")) {
+            if !boot_args
+                .split_whitespace()
+                .any(|value| value.starts_with("pci="))
+            {
                 boot_args.push_str(" pci=on");
             }
         }
@@ -103,10 +106,7 @@ pub fn write_config(record: &MachineRecord) -> Result<()> {
     atomic_write_json(Path::new(&record.config_path), &config, 0o600)
 }
 
-pub fn reject_shared_writable_disk(
-    paths: &RuntimePaths,
-    candidate: &MachineRecord,
-) -> Result<()> {
+pub fn reject_shared_writable_disk(paths: &RuntimePaths, candidate: &MachineRecord) -> Result<()> {
     for disk in candidate.disks.iter().filter(|disk| disk.writable) {
         let candidate_path = canonical_or_declared(&disk.path);
         for other in list_machines(paths)? {
@@ -251,11 +251,7 @@ pub fn api_request(
     headers: &[(String, String)],
     body: &[u8],
 ) -> Result<(u16, Vec<u8>)> {
-    if !path.starts_with('/')
-        || path.contains("..")
-        || path.contains('\n')
-        || path.contains('\r')
-    {
+    if !path.starts_with('/') || path.contains("..") || path.contains('\n') || path.contains('\r') {
         bail!("invalid Firecracker API path");
     }
     if method.is_empty() || !method.bytes().all(|value| value.is_ascii_uppercase()) {
@@ -337,9 +333,7 @@ fn canonical_or_declared(path: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{
-        AssetIdentity, DiskRecord, MachineMode, NetworkRecord, PublishedPort,
-    };
+    use crate::model::{AssetIdentity, DiskRecord, MachineMode, NetworkRecord, PublishedPort};
 
     fn record() -> MachineRecord {
         MachineRecord {
@@ -406,10 +400,7 @@ mod tests {
     fn config_enables_entropy_and_preserves_raw_paths() {
         let config = generate_config(&record()).unwrap();
         assert!(config.get("entropy").is_some());
-        assert_eq!(
-            config["drives"][0]["path_on_host"],
-            "/machine/root.ext4"
-        );
+        assert_eq!(config["drives"][0]["path_on_host"], "/machine/root.ext4");
     }
 
     #[test]

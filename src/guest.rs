@@ -16,15 +16,29 @@ pub fn ensure_guest_key(paths: &RuntimePaths) -> Result<PathBuf> {
     if private.is_file() && public.is_file() {
         return Ok(private);
     }
-    let parent = private.parent().ok_or_else(|| anyhow::anyhow!("guest key has no parent"))?;
+    let parent = private
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("guest key has no parent"))?;
     fs::create_dir_all(parent)?;
     let output = Command::new("ssh-keygen")
-        .args(["-q", "-t", "ed25519", "-N", "", "-C", "smp-guest-root", "-f"])
+        .args([
+            "-q",
+            "-t",
+            "ed25519",
+            "-N",
+            "",
+            "-C",
+            "smp-guest-root",
+            "-f",
+        ])
         .arg(&private)
         .output()
         .context("generate SMP guest SSH key")?;
     if !output.status.success() {
-        bail!("ssh-keygen failed: {}", String::from_utf8_lossy(&output.stderr).trim());
+        bail!(
+            "ssh-keygen failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
     set_mode(&private, 0o600)?;
     set_mode(&public, 0o644)?;
@@ -33,19 +47,30 @@ pub fn ensure_guest_key(paths: &RuntimePaths) -> Result<PathBuf> {
 
 pub fn create_writable_root(base: &Path, destination: &Path, mode: &MachineMode) -> Result<()> {
     if destination.exists() {
-        bail!("machine root disk already exists: {}", destination.display());
+        bail!(
+            "machine root disk already exists: {}",
+            destination.display()
+        );
     }
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent)?;
     }
     let output = Command::new("cp")
-        .args(["--reflink=auto", "--sparse=always", "--preserve=mode,timestamps", "--"])
+        .args([
+            "--reflink=auto",
+            "--sparse=always",
+            "--preserve=mode,timestamps",
+            "--",
+        ])
         .arg(base)
         .arg(destination)
         .output()
         .context("clone immutable SMP base image")?;
     if !output.status.success() {
-        bail!("root disk clone failed: {}", String::from_utf8_lossy(&output.stderr).trim());
+        bail!(
+            "root disk clone failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
     set_mode(destination, 0o600)?;
     match mode {
@@ -69,7 +94,10 @@ pub fn create_seed(paths: &RuntimePaths, record: &MachineRecord, output: &Path) 
         .arg("--authorized-key-file")
         .arg(public)
         .arg("--address")
-        .arg(format!("{}/{}", record.network.guest_address, record.network.prefix_length))
+        .arg(format!(
+            "{}/{}",
+            record.network.guest_address, record.network.prefix_length
+        ))
         .arg("--gateway")
         .arg(&record.network.gateway_address)
         .arg("--dns")
@@ -79,7 +107,10 @@ pub fn create_seed(paths: &RuntimePaths, record: &MachineRecord, output: &Path) 
         .output()
         .with_context(|| format!("run {}", script.display()))?;
     if !command.status.success() {
-        bail!("seed creation failed: {}", String::from_utf8_lossy(&command.stderr).trim());
+        bail!(
+            "seed creation failed: {}",
+            String::from_utf8_lossy(&command.stderr).trim()
+        );
     }
     set_mode(output, 0o600)?;
     Ok(())
@@ -103,9 +134,7 @@ pub fn open_shell(record: &MachineRecord) -> Result<ExitStatus> {
     let mut command = ssh_command(record);
     command.arg("-tt");
     command.arg(format!("root@{}", record.network.guest_address));
-    command
-        .status()
-        .context("open guest root shell")
+    command.status().context("open guest root shell")
 }
 
 pub fn exec_exact(record: &MachineRecord, argv: &[String], tty: bool) -> Result<ExitStatus> {
@@ -131,7 +160,11 @@ pub fn exec_exact(record: &MachineRecord, argv: &[String], tty: bool) -> Result<
         .context("execute exact guest argv")
 }
 
-pub fn exec_capture(record: &MachineRecord, argv: &[String], stdin: Option<&[u8]>) -> Result<std::process::Output> {
+pub fn exec_capture(
+    record: &MachineRecord,
+    argv: &[String],
+    stdin: Option<&[u8]>,
+) -> Result<std::process::Output> {
     if argv.is_empty() {
         bail!("exec requires a non-empty argv");
     }
@@ -150,7 +183,11 @@ pub fn exec_capture(record: &MachineRecord, argv: &[String], stdin: Option<&[u8]
     }
     let mut child = command.spawn().context("spawn guest command")?;
     if let Some(input) = stdin {
-        child.stdin.as_mut().expect("piped stdin").write_all(input)?;
+        child
+            .stdin
+            .as_mut()
+            .expect("piped stdin")
+            .write_all(input)?;
     }
     child.wait_with_output().context("wait for guest command")
 }
@@ -163,17 +200,32 @@ pub fn upload(record: &MachineRecord, guest_path: &str, bytes: &[u8]) -> Result<
     command.arg("/usr/local/libexec/smp-file-write-hex");
     command.arg(hex::encode(guest_path.as_bytes()));
     command.arg(bytes.len().to_string());
-    command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut child = command.spawn().context("spawn guest upload")?;
-    child.stdin.as_mut().expect("piped stdin").write_all(bytes)?;
+    child
+        .stdin
+        .as_mut()
+        .expect("piped stdin")
+        .write_all(bytes)?;
     let output = child.wait_with_output()?;
     if !output.status.success() {
-        bail!("guest upload failed: {}", String::from_utf8_lossy(&output.stderr).trim());
+        bail!(
+            "guest upload failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
     Ok(())
 }
 
-pub fn download(record: &MachineRecord, guest_path: &str, offset: u64, maximum: u64) -> Result<Vec<u8>> {
+pub fn download(
+    record: &MachineRecord,
+    guest_path: &str,
+    offset: u64,
+    maximum: u64,
+) -> Result<Vec<u8>> {
     validate_guest_path(guest_path)?;
     let output = ssh_output(
         record,
@@ -185,7 +237,10 @@ pub fn download(record: &MachineRecord, guest_path: &str, offset: u64, maximum: 
         ],
     )?;
     if !output.status.success() {
-        bail!("guest download failed: {}", String::from_utf8_lossy(&output.stderr).trim());
+        bail!(
+            "guest download failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
     Ok(output.stdout)
 }

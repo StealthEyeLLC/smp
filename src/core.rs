@@ -76,7 +76,10 @@ pub fn create(paths: &RuntimePaths, options: &CreateOptions) -> Result<MachineRe
     let machine_dir = paths.machine_dir(&options.name)?;
     fs::create_dir_all(&machine_dir)?;
     let root_path = machine_dir.join("root.ext4");
-    let selected_root = options.rootfs.as_deref().unwrap_or(Path::new(&manifest.rootfs.path));
+    let selected_root = options
+        .rootfs
+        .as_deref()
+        .unwrap_or(Path::new(&manifest.rootfs.path));
     let root_identity = custom_or_manifest_identity(
         selected_root,
         options.rootfs.is_some(),
@@ -88,13 +91,19 @@ pub fn create(paths: &RuntimePaths, options: &CreateOptions) -> Result<MachineRe
     let seed_path = machine_dir.join("seed.ext4");
 
     let firecracker = custom_or_manifest_identity(
-        options.firecracker.as_deref().unwrap_or(Path::new(&manifest.firecracker.path)),
+        options
+            .firecracker
+            .as_deref()
+            .unwrap_or(Path::new(&manifest.firecracker.path)),
         options.firecracker.is_some(),
         &manifest.firecracker,
         "operator-firecracker",
     )?;
     let kernel = custom_or_manifest_identity(
-        options.kernel.as_deref().unwrap_or(Path::new(&manifest.kernel.path)),
+        options
+            .kernel
+            .as_deref()
+            .unwrap_or(Path::new(&manifest.kernel.path)),
         options.kernel.is_some(),
         &manifest.kernel,
         "operator-kernel",
@@ -139,10 +148,21 @@ pub fn create(paths: &RuntimePaths, options: &CreateOptions) -> Result<MachineRe
         ],
         network,
         ssh_user: "root".to_owned(),
-        ssh_key_path: guest::ensure_guest_key(paths)?.to_string_lossy().into_owned(),
-        api_socket: paths.machine_socket_path(&options.name)?.to_string_lossy().into_owned(),
-        config_path: paths.machine_config_path(&options.name)?.to_string_lossy().into_owned(),
-        serial_log_path: paths.machine_serial_path(&options.name)?.to_string_lossy().into_owned(),
+        ssh_key_path: guest::ensure_guest_key(paths)?
+            .to_string_lossy()
+            .into_owned(),
+        api_socket: paths
+            .machine_socket_path(&options.name)?
+            .to_string_lossy()
+            .into_owned(),
+        config_path: paths
+            .machine_config_path(&options.name)?
+            .to_string_lossy()
+            .into_owned(),
+        serial_log_path: paths
+            .machine_serial_path(&options.name)?
+            .to_string_lossy()
+            .into_owned(),
         process: None,
         created_at_unix_ms: now,
         updated_at_unix_ms: now,
@@ -167,7 +187,9 @@ pub fn start(paths: &RuntimePaths, name: &str, foreground: bool) -> Result<Machi
         return Ok(record);
     }
     if record.state == MachineState::Stale {
-        bail!("machine {name} has ambiguous stale runtime state; inspect and resolve it before start");
+        bail!(
+            "machine {name} has ambiguous stale runtime state; inspect and resolve it before start"
+        );
     }
 
     let manifest = load_manifest(paths)?;
@@ -215,7 +237,10 @@ pub fn start(paths: &RuntimePaths, name: &str, foreground: bool) -> Result<Machi
         Err(error) => {
             let _ = network::cleanup(name, &record.network);
             record.state = MachineState::Crashed;
-            record.last_error = Some(TypedError::new("FIRECRACKER_START_FAILED", error.to_string()));
+            record.last_error = Some(TypedError::new(
+                "FIRECRACKER_START_FAILED",
+                error.to_string(),
+            ));
             record.updated_at_unix_ms = now_unix_ms();
             save_machine(paths, &mut record)?;
             Err(error)
@@ -230,7 +255,10 @@ pub fn wait(paths: &RuntimePaths, name: &str, timeout: Duration) -> Result<Machi
         if last.state == MachineState::Ready {
             return Ok(last);
         }
-        if matches!(last.state, MachineState::Crashed | MachineState::Stale | MachineState::Stopped) {
+        if matches!(
+            last.state,
+            MachineState::Crashed | MachineState::Stale | MachineState::Stopped
+        ) {
             bail!("machine {name} reached {:?} before ready", last.state);
         }
         thread::sleep(Duration::from_millis(500));
@@ -278,7 +306,10 @@ fn reconcile_locked(paths: &RuntimePaths, record: &mut MachineRecord) -> Result<
         None => {
             if Path::new(&record.api_socket).exists() || network::exists(&record.network) {
                 record.state = MachineState::Stale;
-            } else if matches!(record.state, MachineState::Starting | MachineState::Running | MachineState::Ready) {
+            } else if matches!(
+                record.state,
+                MachineState::Starting | MachineState::Running | MachineState::Ready
+            ) {
                 record.state = MachineState::Crashed;
             }
         }
@@ -300,7 +331,11 @@ pub fn stop(paths: &RuntimePaths, name: &str) -> Result<MachineRecord> {
     if record.state == MachineState::Stale {
         bail!("refusing graceful stop for ambiguous machine {name}");
     }
-    let _ = guest::exec_capture(&record, &["systemctl".to_owned(), "poweroff".to_owned()], None);
+    let _ = guest::exec_capture(
+        &record,
+        &["systemctl".to_owned(), "poweroff".to_owned()],
+        None,
+    );
     if !firecracker::wait_for_exit(&identity, Duration::from_secs(30))? {
         let _ = firecracker::request_shutdown(&record);
     }
@@ -341,13 +376,20 @@ fn finish_stopped(paths: &RuntimePaths, record: &mut MachineRecord) -> Result<()
     save_machine(paths, record)
 }
 
-pub fn reboot(paths: &RuntimePaths, name: &str) -> Result<(crate::model::ProcessIdentity, MachineRecord)> {
+pub fn reboot(
+    paths: &RuntimePaths,
+    name: &str,
+) -> Result<(crate::model::ProcessIdentity, MachineRecord)> {
     let before = status(paths, name)?;
     let old = before
         .process
         .clone()
         .ok_or_else(|| anyhow::anyhow!("machine {name} is not running"))?;
-    let _ = guest::exec_capture(&before, &["systemctl".to_owned(), "reboot".to_owned()], None);
+    let _ = guest::exec_capture(
+        &before,
+        &["systemctl".to_owned(), "reboot".to_owned()],
+        None,
+    );
     if !firecracker::wait_for_exit(&old, Duration::from_secs(30))? {
         let _ = stop(paths, name)?;
     } else {
@@ -368,7 +410,10 @@ pub fn reboot(paths: &RuntimePaths, name: &str) -> Result<(crate::model::Process
 
 pub fn destroy(paths: &RuntimePaths, name: &str, force: bool) -> Result<()> {
     let current = status(paths, name)?;
-    if matches!(current.state, MachineState::Running | MachineState::Ready | MachineState::Starting) {
+    if matches!(
+        current.state,
+        MachineState::Running | MachineState::Ready | MachineState::Starting
+    ) {
         if !force {
             bail!("machine {name} is running; stop it or pass --force");
         }
@@ -408,8 +453,12 @@ pub fn copy(paths: &RuntimePaths, name: &str, source: &str, destination: &str) -
     let source_guest = source.strip_prefix("guest:");
     let destination_guest = destination.strip_prefix("guest:");
     match (source_guest, destination_guest) {
-        (Some(guest_path), None) => guest::copy_guest_to_local(&record, guest_path, Path::new(destination)),
-        (None, Some(guest_path)) => guest::copy_local_to_guest(&record, Path::new(source), guest_path),
+        (Some(guest_path), None) => {
+            guest::copy_guest_to_local(&record, guest_path, Path::new(destination))
+        }
+        (None, Some(guest_path)) => {
+            guest::copy_local_to_guest(&record, Path::new(source), guest_path)
+        }
         _ => bail!("exactly one cp endpoint must use the guest:/absolute/path form"),
     }
 }
@@ -512,6 +561,8 @@ mod tests {
         let args = default_boot_args("test");
         assert!(!args.split_whitespace().any(|value| value == "noapic"));
         assert!(args.split_whitespace().any(|value| value == "pci=on"));
-        assert!(args.split_whitespace().any(|value| value == "net.ifnames=0"));
+        assert!(args
+            .split_whitespace()
+            .any(|value| value == "net.ifnames=0"));
     }
 }

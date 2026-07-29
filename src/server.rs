@@ -12,10 +12,13 @@ const MAX_HTTP_BODY: usize = 2 * 1024 * 1024;
 
 pub fn serve(paths: RuntimePaths, listen: SocketAddr) -> Result<()> {
     if !listen.ip().is_loopback() {
-        bail!("smp serve refuses a non-loopback listener; use the dedicated authenticated SMP tunnel");
+        bail!(
+            "smp serve refuses a non-loopback listener; use the dedicated authenticated SMP tunnel"
+        );
     }
     paths.ensure()?;
-    let listener = TcpListener::bind(listen).with_context(|| format!("bind SMP MCP listener {listen}"))?;
+    let listener =
+        TcpListener::bind(listen).with_context(|| format!("bind SMP MCP listener {listen}"))?;
     for connection in listener.incoming() {
         match connection {
             Ok(mut stream) => {
@@ -35,11 +38,18 @@ pub fn serve(paths: RuntimePaths, listen: SocketAddr) -> Result<()> {
 fn handle_connection(paths: &RuntimePaths, stream: &mut TcpStream) -> Result<()> {
     let request = read_http_request(stream)?;
     match (request.method.as_str(), request.path.as_str()) {
-        ("GET", "/healthz") => write_response(stream, 200, "application/json", br#"{"healthy":true}"#),
+        ("GET", "/healthz") => {
+            write_response(stream, 200, "application/json", br#"{"healthy":true}"#)
+        }
         ("GET", "/readyz") => {
             let ready = remote::describe(paths, false).is_ok();
             let status = if ready { 200 } else { 503 };
-            write_response(stream, status, "application/json", json!({"ready": ready}).to_string().as_bytes())
+            write_response(
+                stream,
+                status,
+                "application/json",
+                json!({"ready": ready}).to_string().as_bytes(),
+            )
         }
         ("POST", "/mcp") => handle_mcp(paths, stream, &request.body),
         _ => write_response(stream, 404, "application/json", br#"{"error":"not found"}"#),
@@ -79,7 +89,9 @@ fn handle_mcp(paths: &RuntimePaths, stream: &mut TcpStream, body: &[u8]) -> Resu
         }),
         "tools/call" => {
             let params = value.get("params").and_then(Value::as_object);
-            let tool = params.and_then(|params| params.get("name")).and_then(Value::as_str);
+            let tool = params
+                .and_then(|params| params.get("name"))
+                .and_then(Value::as_str);
             if tool != Some("go") {
                 json_rpc_error(id, -32602, "SMP exposes exactly one tool named go")
             } else {
@@ -101,7 +113,9 @@ fn handle_mcp(paths: &RuntimePaths, stream: &mut TcpStream, body: &[u8]) -> Resu
                             }
                         })
                     }
-                    Err(error) => json_rpc_error(id, -32602, &format!("invalid smp.go request: {error}")),
+                    Err(error) => {
+                        json_rpc_error(id, -32602, &format!("invalid smp.go request: {error}"))
+                    }
                 }
             }
         }
@@ -158,12 +172,21 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest> {
             break position + 4;
         }
     };
-    let head = String::from_utf8(bytes[..header_end].to_vec()).context("HTTP headers are not UTF-8")?;
+    let head =
+        String::from_utf8(bytes[..header_end].to_vec()).context("HTTP headers are not UTF-8")?;
     let mut lines = head.split("\r\n");
-    let request_line = lines.next().ok_or_else(|| anyhow::anyhow!("missing request line"))?;
+    let request_line = lines
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing request line"))?;
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("").to_owned();
-    let path = parts.next().unwrap_or("").split('?').next().unwrap_or("").to_owned();
+    let path = parts
+        .next()
+        .unwrap_or("")
+        .split('?')
+        .next()
+        .unwrap_or("")
+        .to_owned();
     let content_length = lines
         .filter_map(|line| line.split_once(':'))
         .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
@@ -188,7 +211,12 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest> {
     Ok(HttpRequest { method, path, body })
 }
 
-fn write_response(stream: &mut TcpStream, status: u16, content_type: &str, body: &[u8]) -> Result<()> {
+fn write_response(
+    stream: &mut TcpStream,
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+) -> Result<()> {
     let reason = match status {
         200 => "OK",
         202 => "Accepted",
