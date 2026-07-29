@@ -152,9 +152,49 @@ EOF_C
 gcc -O2 -o /root/native /root/native.c; test "$(/root/native)" = native-ok'
 
 stage 'Published port and exact argv behavior'
+smp exec "$PRIMARY" -- bash -lc 'pkill -x nc >/dev/null 2>&1 || true; pkill -x smp-http >/dev/null 2>&1 || true; cat >/root/smp-http.c <<EOF_HTTP
+#include <arpa/inet.h>
+#include <errno.h>
+#include <signal.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
+int main(void) {
+    int listener = socket(AF_INET, SOCK_STREAM, 0);
+    if (listener < 0) { perror("socket"); return 1; }
+    int one = 1;
+    if (setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) < 0) { perror("setsockopt"); return 1; }
+    struct sockaddr_in address;
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_port = htons(8080);
+    address.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(listener, (struct sockaddr *)&address, sizeof(address)) < 0) { perror("bind"); return 1; }
+    if (listen(listener, 16) < 0) { perror("listen"); return 1; }
+    signal(SIGPIPE, SIG_IGN);
+    static const char response[] = "HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\npublished-ok";
+    for (;;) {
+        int client = accept(listener, NULL, NULL);
+        if (client < 0) { if (errno == EINTR) continue; perror("accept"); return 1; }
+        char request[1024];
+        (void)read(client, request, sizeof(request));
+        const char *cursor = response;
+        size_t remaining = sizeof(response) - 1;
+        while (remaining > 0) {
+            ssize_t sent = send(client, cursor, remaining, MSG_NOSIGNAL);
+            if (sent < 0) { if (errno == EINTR) continue; break; }
+            cursor += sent;
+            remaining -= (size_t)sent;
+        }
+        close(client);
+    }
+}
+EOF_HTTP
+gcc -O2 -Wall -Wextra -Werror -o /root/smp-http /root/smp-http.c'
 PUBLISH_UNIT="smp-publish-acceptance-$$"
-HTTP_LOOP='while true; do printf "HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\npublished-ok" | nc -l -p 8080 -q 1; done'
-smp exec "$PRIMARY" -- systemd-run --quiet --collect --unit "$PUBLISH_UNIT" --property Restart=always /bin/sh -c "$HTTP_LOOP"
+smp exec "$PRIMARY" -- systemd-run --quiet --collect --unit "$PUBLISH_UNIT" --property Restart=always /root/smp-http
 smp exec "$PRIMARY" -- systemctl is-active --quiet "${PUBLISH_UNIT}.service"
 
 GUEST_HTTP=
