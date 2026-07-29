@@ -190,7 +190,7 @@ impl Manager {
                 seed_path,
                 seed_identity,
                 machine_directory: machine_dir.clone(),
-                api_socket: machine_dir.join("firecracker.sock"),
+                api_socket: self.paths.machine_socket(&options.machine_id)?,
                 firecracker_process: None,
                 generated_config_digest: None,
                 created_at: now,
@@ -231,7 +231,7 @@ impl Manager {
         record.updated_at = now_unix_seconds();
         record.last_error = None;
         self.save(&record)?;
-        match firecracker::launch(&record) {
+        match firecracker::launch(&record, &self.paths.runtime) {
             Ok(identity) => {
                 record.firecracker_process = Some(identity);
                 record.root_disk.active = true;
@@ -458,7 +458,11 @@ impl Manager {
         let record: MachineRecord = read_json(&path)?;
         record.validate()?;
         let expected = self.paths.machine_dir(machine)?;
-        if record.machine_directory != expected || record.machine_id != machine {
+        let expected_socket = self.paths.machine_socket(machine)?;
+        if record.machine_directory != expected
+            || record.api_socket != expected_socket
+            || record.machine_id != machine
+        {
             return Err(SmpError::Ambiguous(format!(
                 "machine record path identity mismatch for {machine}"
             )));

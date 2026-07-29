@@ -537,7 +537,14 @@ fn api(manager: &Manager, json_output: bool, command: ApiCommand) -> Result<i32>
         })
         .transpose()?
         .unwrap_or_default();
-    let response = firecracker::raw_api(&record, &command.method, &command.path, &headers, &body)?;
+    let response = firecracker::raw_api(
+        &record,
+        &manager.paths.runtime,
+        &command.method,
+        &command.path,
+        &headers,
+        &body,
+    )?;
     let value = json!({
         "statusCode": response.status_code,
         "headers": response.headers,

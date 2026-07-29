@@ -3,6 +3,7 @@ use crate::util::{ensure_beneath, reject_symlink_components, validate_absolute_c
 use serde::Serialize;
 use std::env;
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -137,6 +138,19 @@ impl Paths {
 
     pub fn machine_record(&self, machine: &str) -> Result<PathBuf> {
         Ok(self.machine_dir(machine)?.join("machine.json"))
+    }
+
+    pub fn machine_socket(&self, machine: &str) -> Result<PathBuf> {
+        validate_machine_name(machine)?;
+        let path = self.runtime.join(format!("{machine}.sock"));
+        ensure_beneath(&self.runtime, &path)?;
+        if path.as_os_str().as_bytes().len() > 107 {
+            return Err(SmpError::Invalid(format!(
+                "Firecracker API socket path exceeds the Unix limit: {}",
+                path.display()
+            )));
+        }
+        Ok(path)
     }
 
     pub fn request_record(&self, request_id: &str) -> Result<PathBuf> {
@@ -296,6 +310,22 @@ mod tests {
         for invalid in ["", "../x", "a/b", "-bad", "bad-", "a.b", ".."] {
             assert!(validate_machine_name(invalid).is_err(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn machine_socket_uses_runtime_and_enforces_unix_limit() -> Result<()> {
+        let paths = Paths::rooted(Path::new("/isolation"))?;
+        assert_eq!(
+            paths.machine_socket("default")?,
+            PathBuf::from("/isolation/run/smp/default.sock")
+        );
+        let long_root = PathBuf::from(format!("/{}", "x".repeat(100)));
+        assert!(
+            Paths::rooted(&long_root)?
+                .machine_socket("default")
+                .is_err()
+        );
+        Ok(())
     }
 
     #[test]

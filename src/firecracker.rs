@@ -111,7 +111,7 @@ pub fn write_configuration(record: &MachineRecord) -> Result<(PathBuf, String)> 
     Ok((path.clone(), sha256_file(&path)?))
 }
 
-pub fn launch(record: &MachineRecord) -> Result<ProcessIdentity> {
+pub fn launch(record: &MachineRecord, runtime: &Path) -> Result<ProcessIdentity> {
     if record.api_socket.exists() {
         return Err(SmpError::Ambiguous(format!(
             "API socket already exists: {}",
@@ -146,7 +146,7 @@ pub fn launch(record: &MachineRecord) -> Result<ProcessIdentity> {
             )));
         }
         if record.api_socket.exists() {
-            process::verified_socket(&identity, &record.machine_directory, &record.api_socket)?;
+            process::verified_socket(&identity, runtime, &record.api_socket)?;
             return Ok(identity);
         }
         if Instant::now() >= deadline {
@@ -161,6 +161,7 @@ pub fn launch(record: &MachineRecord) -> Result<ProcessIdentity> {
 
 pub fn raw_api(
     record: &MachineRecord,
+    runtime: &Path,
     method: &str,
     path: &str,
     headers: &BTreeMap<String, String>,
@@ -170,7 +171,7 @@ pub fn raw_api(
         .firecracker_process
         .as_ref()
         .ok_or_else(|| SmpError::State("machine has no Firecracker process".to_owned()))?;
-    process::verified_socket(identity, &record.machine_directory, &record.api_socket)?;
+    process::verified_socket(identity, runtime, &record.api_socket)?;
     if !matches!(method, "GET" | "PUT" | "PATCH" | "DELETE")
         || !path.starts_with('/')
         || path.contains('\r')

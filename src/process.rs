@@ -173,22 +173,22 @@ fn open_log(path: &Path) -> Result<File> {
 
 pub fn verified_socket(
     identity: &ProcessIdentity,
-    machine_dir: &Path,
+    runtime_dir: &Path,
     socket: &Path,
 ) -> Result<()> {
     verify(identity)?;
     let socket_parent = socket
         .parent()
         .ok_or_else(|| SmpError::Invalid("API socket has no parent".to_owned()))?;
-    let expected = fs::canonicalize(machine_dir)
-        .map_err(|error| SmpError::io(machine_dir.display().to_string(), error))?;
+    let expected = fs::canonicalize(runtime_dir)
+        .map_err(|error| SmpError::io(runtime_dir.display().to_string(), error))?;
     let actual = fs::canonicalize(socket_parent)
         .map_err(|error| SmpError::io(socket_parent.display().to_string(), error))?;
     if expected != actual {
         return Err(SmpError::Ambiguous(format!(
-            "API socket {} is not in machine directory {}",
+            "API socket {} is not in runtime directory {}",
             socket.display(),
-            machine_dir.display()
+            runtime_dir.display()
         )));
     }
     let metadata =

@@ -399,7 +399,14 @@ impl Engine {
             .map(decode_base64)
             .transpose()?
             .unwrap_or_default();
-        let response = firecracker::raw_api(&record, &method, &path, &headers, &body)?;
+        let response = firecracker::raw_api(
+            &record,
+            &self.paths.runtime,
+            &method,
+            &path,
+            &headers,
+            &body,
+        )?;
         Ok(RemoteResponse::completed(
             &request.request_id,
             json!({
