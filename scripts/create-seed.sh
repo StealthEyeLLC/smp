@@ -8,6 +8,7 @@ AUTHORIZED_KEY_FILE=
 ADDRESS=
 GATEWAY=
 DNS=
+MAC=
 FILES=
 INIT=
 
@@ -19,13 +20,14 @@ while (($#)); do
         --address) ADDRESS=$2; shift 2 ;;
         --gateway) GATEWAY=$2; shift 2 ;;
         --dns) DNS=$2; shift 2 ;;
+        --mac) MAC=$2; shift 2 ;;
         --files) FILES=$2; shift 2 ;;
         --init) INIT=$2; shift 2 ;;
         *) printf 'unknown argument: %s\n' "$1" >&2; exit 64 ;;
     esac
 done
 
-[[ -n $OUTPUT && -n $HOSTNAME && -n $AUTHORIZED_KEY_FILE && -n $ADDRESS && -n $GATEWAY && -n $DNS ]] || {
+[[ -n $OUTPUT && -n $HOSTNAME && -n $AUTHORIZED_KEY_FILE && -n $ADDRESS && -n $GATEWAY && -n $DNS && -n $MAC ]] || {
     printf 'missing required seed argument\n' >&2; exit 64;
 }
 [[ $HOSTNAME =~ ^[a-z][a-z0-9-]{0,62}$ ]] || { printf 'invalid hostname\n' >&2; exit 65; }
@@ -33,6 +35,7 @@ done
 [[ $ADDRESS =~ ^[0-9.]+/[0-9]+$ ]] || { printf 'invalid address\n' >&2; exit 65; }
 [[ $GATEWAY =~ ^[0-9.]+$ ]] || { printf 'invalid gateway\n' >&2; exit 65; }
 [[ $DNS =~ ^[0-9.,]+$ ]] || { printf 'invalid DNS list\n' >&2; exit 65; }
+[[ $MAC =~ ^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$ ]] || { printf 'invalid MAC address\n' >&2; exit 65; }
 [[ ! -e $OUTPUT ]] || { printf 'seed output already exists: %s\n' "$OUTPUT" >&2; exit 73; }
 
 WORK="$(mktemp -d)"
@@ -44,6 +47,7 @@ cat > "$WORK/root/network.env" <<NETWORK
 ADDRESS='$ADDRESS'
 GATEWAY='$GATEWAY'
 DNS='$DNS'
+MAC='$MAC'
 NETWORK
 if [[ -n $FILES ]]; then
     [[ -d $FILES ]] || { printf 'seed files directory missing\n' >&2; exit 66; }
