@@ -43,11 +43,11 @@ if [[ $SKIP_PACKAGES -eq 0 ]]; then
     apt-get update
     apt-get install -y --no-install-recommends \
       ca-certificates curl git build-essential pkg-config libssl-dev jq \
-      debootstrap e2fsprogs util-linux iproute2 nftables openssh-client \
+      debootstrap e2fsprogs util-linux iproute2 nftables iptables openssh-client \
       xz-utils zstd bison flex libelf-dev bc dwarves rsync file kmod procps shellcheck
 fi
 
-for tool in awk curl debugfs df git install jq losetup sha256sum systemctl tar; do
+for tool in awk curl debugfs df git install iptables iptables-save jq losetup sha256sum shellcheck systemctl tar; do
     command -v "$tool" >/dev/null || { printf 'missing bootstrap tool: %s\n' "$tool" >&2; exit 69; }
 done
 
@@ -77,6 +77,7 @@ fi
 RUSTUP_OBSERVED="$($RUSTUP_BIN --version)"
 [[ $RUSTUP_OBSERVED == "rustup ${RUSTUP_VERSION}"* ]] || { printf 'unexpected rustup: %s\n' "$RUSTUP_OBSERVED" >&2; exit 69; }
 "$RUSTUP_BIN" toolchain install "$RUST_TOOLCHAIN" --profile minimal
+"$RUSTUP_BIN" component add --toolchain "$RUST_TOOLCHAIN" rustfmt clippy
 RUSTC_BIN="$($RUSTUP_BIN which --toolchain "$RUST_TOOLCHAIN" rustc)"
 RUSTDOC_BIN="$($RUSTUP_BIN which --toolchain "$RUST_TOOLCHAIN" rustdoc)"
 CARGO_BIN="$($RUSTUP_BIN which --toolchain "$RUST_TOOLCHAIN" cargo)"
@@ -121,7 +122,7 @@ install -d -m 0755 /usr/local/bin /usr/lib/smp /usr/lib/smp/assets /etc/smp /etc
 install -d -m 0700 /var/lib/smp /var/lib/smp/machines /var/lib/smp/assets /var/lib/smp/requests /var/lib/smp/results /var/lib/smp/provenance /run/smp
 install -m 0755 "$CANDIDATE" /usr/local/bin/smp.new
 mv -f /usr/local/bin/smp.new /usr/local/bin/smp
-for script in build-assets.sh create-seed.sh repair-rootfs.sh test-repository.sh acceptance.sh prompt2-handoff.sh uninstall.sh; do
+for script in build-assets.sh create-seed.sh repair-rootfs.sh repair-host-network.sh test-repository.sh acceptance.sh prompt2-handoff.sh recover-firecracker-acceptance.sh uninstall.sh; do
     install -m 0755 "$BUILD_SOURCE/scripts/$script" "/usr/lib/smp/$script"
 done
 rm -rf /usr/lib/smp/assets.new
