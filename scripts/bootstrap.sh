@@ -6,8 +6,11 @@ SOURCE=
 COMMIT=
 SKIP_PACKAGES=0
 SKIP_TUNNEL_PROMPT=0
+RUSTUP_VERSION=1.29.0
 RUST_TOOLCHAIN=1.97.1
 RUST_HOST=x86_64-unknown-linux-gnu
+RUSTUP_INIT_URL="https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${RUST_HOST}/rustup-init"
+RUSTUP_INIT_SHA_URL="${RUSTUP_INIT_URL}.sha256"
 CLOUDFLARED_VERSION=2026.5.2
 CLOUDFLARED_SHA256=5286698547f03df745adb2355f04c12dde52ef425491e81f433642d695521886
 CLOUDFLARED_URL="https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64"
@@ -36,38 +39,14 @@ if [[ $SKIP_PACKAGES -eq 0 ]]; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
     apt-get install -y --no-install-recommends \
-      ca-certificates curl git build-essential rustup pkg-config libssl-dev jq \
+      ca-certificates curl git build-essential pkg-config libssl-dev jq \
       debootstrap e2fsprogs util-linux iproute2 nftables openssh-client \
       xz-utils zstd bison flex libelf-dev bc dwarves rsync file kmod procps shellcheck
 fi
 
-for tool in rustup curl git install systemctl sha256sum jq tar; do
+for tool in curl git install systemctl sha256sum jq tar awk; do
     command -v "$tool" >/dev/null || { printf 'missing bootstrap tool: %s\n' "$tool" >&2; exit 69; }
 done
-
-install -d -m 0700 /var/lib/smp /var/lib/smp/toolchain /var/lib/smp/toolchain/rustup /var/lib/smp/toolchain/cargo
-export RUSTUP_HOME=/var/lib/smp/toolchain/rustup
-unset CARGO_HOME RUSTUP_TOOLCHAIN || true
-RUSTUP_BIN="$(command -v rustup)"
-"$RUSTUP_BIN" toolchain install "$RUST_TOOLCHAIN" --profile minimal
-TOOLCHAIN_ROOT="$RUSTUP_HOME/toolchains/${RUST_TOOLCHAIN}-${RUST_HOST}"
-RUSTC_BIN="$TOOLCHAIN_ROOT/bin/rustc"
-RUSTDOC_BIN="$TOOLCHAIN_ROOT/bin/rustdoc"
-CARGO_BIN="$TOOLCHAIN_ROOT/bin/cargo"
-for tool in "$RUSTC_BIN" "$RUSTDOC_BIN" "$CARGO_BIN"; do
-    [[ -x $tool ]] || { printf 'pinned Rust tool is missing: %s\n' "$tool" >&2; exit 69; }
-done
-RUSTC_VERSION="$("$RUSTC_BIN" --version)"
-CARGO_VERSION="$("$CARGO_BIN" --version)"
-[[ $RUSTC_VERSION == "rustc ${RUST_TOOLCHAIN} "* ]] || { printf 'unexpected Rust compiler: %s\n' "$RUSTC_VERSION" >&2; exit 69; }
-[[ $CARGO_VERSION == "cargo ${RUST_TOOLCHAIN} "* ]] || { printf 'unexpected Cargo: %s\n' "$CARGO_VERSION" >&2; exit 69; }
-export CARGO_HOME=/var/lib/smp/toolchain/cargo
-export RUSTC="$RUSTC_BIN"
-export RUSTDOC="$RUSTDOC_BIN"
-export PATH="$TOOLCHAIN_ROOT/bin:$PATH"
-printf 'Using %s\n' "$RUSTC_VERSION"
-printf 'Using %s\n' "$CARGO_VERSION"
-printf 'Toolchain root: %s\n' "$TOOLCHAIN_ROOT"
 
 BUILD_ROOT="$(mktemp -d /var/tmp/smp-bootstrap.XXXXXX)"
 TMP_CLOUDFLARED=
@@ -76,6 +55,42 @@ cleanup() {
     rm -rf "$BUILD_ROOT"
 }
 trap cleanup EXIT
+
+install -d -m 0700 /var/lib/smp /var/lib/smp/toolchain /var/lib/smp/toolchain/rustup /var/lib/smp/toolchain/cargo
+export RUSTUP_HOME=/var/lib/smp/toolchain/rustup
+export CARGO_HOME=/var/lib/smp/toolchain/cargo
+export RUSTUP_INIT_SKIP_PATH_CHECK=yes
+RUSTUP_BIN="$CARGO_HOME/bin/rustup"
+if [[ ! -x $RUSTUP_BIN ]]; then
+    printf 'Installing official rustup %s into %s\n' "$RUSTUP_VERSION" "$CARGO_HOME"
+    curl --fail --location --proto '=https' --tlsv1.2 --retry 4 --output "$BUILD_ROOT/rustup-init" "$RUSTUP_INIT_URL"
+    curl --fail --location --proto '=https' --tlsv1.2 --retry 4 --output "$BUILD_ROOT/rustup-init.sha256" "$RUSTUP_INIT_SHA_URL"
+    RUSTUP_INIT_SHA="$(awk 'NR == 1 {print $1}' "$BUILD_ROOT/rustup-init.sha256")"
+    [[ $RUSTUP_INIT_SHA =~ ^[0-9a-f]{64}$ ]] || { printf 'invalid official rustup-init checksum\n' >&2; exit 65; }
+    printf '%s  %s\n' "$RUSTUP_INIT_SHA" "$BUILD_ROOT/rustup-init" | sha256sum --check --strict -
+    chmod 0755 "$BUILD_ROOT/rustup-init"
+    "$BUILD_ROOT/rustup-init" -y --no-modify-path --default-toolchain none --profile minimal
+fi
+RUSTUP_OBSERVED="$($RUSTUP_BIN --version)"
+[[ $RUSTUP_OBSERVED == "rustup ${RUSTUP_VERSION}"* ]] || { printf 'unexpected rustup: %s\n' "$RUSTUP_OBSERVED" >&2; exit 69; }
+"$RUSTUP_BIN" toolchain install "$RUST_TOOLCHAIN" --profile minimal
+RUSTC_BIN="$($RUSTUP_BIN which --toolchain "$RUST_TOOLCHAIN" rustc)"
+RUSTDOC_BIN="$($RUSTUP_BIN which --toolchain "$RUST_TOOLCHAIN" rustdoc)"
+CARGO_BIN="$($RUSTUP_BIN which --toolchain "$RUST_TOOLCHAIN" cargo)"
+for tool in "$RUSTC_BIN" "$RUSTDOC_BIN" "$CARGO_BIN"; do
+    [[ -x $tool ]] || { printf 'pinned Rust tool is missing: %s\n' "$tool" >&2; exit 69; }
+done
+RUSTC_VERSION="$($RUSTC_BIN --version)"
+CARGO_VERSION="$($CARGO_BIN --version)"
+[[ $RUSTC_VERSION == "rustc ${RUST_TOOLCHAIN} "* ]] || { printf 'unexpected Rust compiler: %s\n' "$RUSTC_VERSION" >&2; exit 69; }
+[[ $CARGO_VERSION == "cargo ${RUST_TOOLCHAIN} "* ]] || { printf 'unexpected Cargo: %s\n' "$CARGO_VERSION" >&2; exit 69; }
+export RUSTC="$RUSTC_BIN"
+export RUSTDOC="$RUSTDOC_BIN"
+export PATH="$(dirname "$CARGO_BIN"):$PATH"
+printf 'Using %s\n' "$RUSTUP_OBSERVED"
+printf 'Using %s\n' "$RUSTC_VERSION"
+printf 'Using %s\n' "$CARGO_VERSION"
+
 mkdir -p "$BUILD_ROOT/source"
 git -C "$SOURCE" archive --format=tar "$COMMIT" | tar -xf - -C "$BUILD_ROOT/source"
 BUILD_SOURCE="$BUILD_ROOT/source"
@@ -135,8 +150,8 @@ cat > /etc/smp/install.json.new <<INSTALL
   "commit": "$COMMIT",
   "smpVersion": "$INSTALLED_VERSION",
   "binarySha256": "$CANDIDATE_SHA",
+  "rustupVersion": "$RUSTUP_VERSION",
   "rustToolchain": "$RUST_TOOLCHAIN",
-  "rustToolchainRoot": "$TOOLCHAIN_ROOT",
   "cargoLockSha256": "$LOCK_SHA",
   "cloudflaredVersion": "$CLOUDFLARED_VERSION",
   "cloudflaredSha256": "$CLOUDFLARED_SHA256",
@@ -170,6 +185,7 @@ fi
 /usr/local/bin/smp --json describe >/dev/null
 printf 'SMP bootstrap complete\n'
 printf 'commit=%s\n' "$COMMIT"
+printf 'rustup_version=%s\n' "$RUSTUP_VERSION"
 printf 'rust_toolchain=%s\n' "$RUST_TOOLCHAIN"
 printf 'cargo_lock_sha256=%s\n' "$LOCK_SHA"
 printf 'binary_sha256=%s\n' "$CANDIDATE_SHA"
