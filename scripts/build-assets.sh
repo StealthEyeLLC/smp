@@ -12,7 +12,12 @@ ARCH=x86_64
 ASSETS_ROOT=/var/lib/smp/assets
 ETC_ROOT=/etc/smp
 OFFLINE=0
-SOURCE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -d "$SCRIPT_DIR/../assets" ]]; then
+    SOURCE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+else
+    SOURCE_ROOT="$SCRIPT_DIR"
+fi
 
 while (($#)); do
     case "$1" in
@@ -25,16 +30,26 @@ done
 
 [[ $(id -u) -eq 0 ]] || { printf 'build-assets.sh requires root\n' >&2; exit 77; }
 [[ $(uname -m) == x86_64 ]] || { printf 'SMP canonical assets require x86_64\n' >&2; exit 69; }
+[[ -d "$SOURCE_ROOT/assets/guest" && -d "$SOURCE_ROOT/assets/guest-tools" ]] || {
+    printf 'SMP guest asset sources are missing beneath %s\n' "$SOURCE_ROOT" >&2
+    exit 66
+}
 
 for tool in curl tar sha256sum jq make gcc debootstrap truncate mkfs.ext4 mount umount chroot rsync blkid; do
     command -v "$tool" >/dev/null || { printf 'missing required tool: %s\n' "$tool" >&2; exit 69; }
 done
 
-mkdir -p "$ASSETS_ROOT/downloads" "$ASSETS_ROOT/firecracker" "$ASSETS_ROOT/kernel" "$ASSETS_ROOT/rootfs" "$ASSETS_ROOT/provenance"
+mkdir -p "$ASSETS_ROOT/downloads" "$ASSETS_ROOT/firecracker" "$ASSETS_ROOT/kernel" "$ASSETS_ROOT/rootfs" "$ASSETS_ROOT/provenance" "$ETC_ROOT"
 WORK="$(mktemp -d "$ASSETS_ROOT/.build.XXXXXX")"
-MOUNTED=0
+ROOT_MOUNTED=0
+DEV_MOUNTED=0
+PROC_MOUNTED=0
+SYS_MOUNTED=0
 cleanup() {
-    if [[ $MOUNTED -eq 1 ]]; then umount "$WORK/root" >/dev/null 2>&1 || true; fi
+    if [[ $SYS_MOUNTED -eq 1 ]]; then umount "$WORK/root/sys" >/dev/null 2>&1 || true; fi
+    if [[ $PROC_MOUNTED -eq 1 ]]; then umount "$WORK/root/proc" >/dev/null 2>&1 || true; fi
+    if [[ $DEV_MOUNTED -eq 1 ]]; then umount "$WORK/root/dev" >/dev/null 2>&1 || true; fi
+    if [[ $ROOT_MOUNTED -eq 1 ]]; then umount "$WORK/root" >/dev/null 2>&1 || true; fi
     rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -57,7 +72,6 @@ download "$FC_SUM_URL" "$ASSETS_ROOT/downloads/$FC_ARCHIVE.sha256.txt"
     cd "$ASSETS_ROOT/downloads"
     sed "s#  .*/#  #" "$FC_ARCHIVE.sha256.txt" | sha256sum --check --strict -
 )
-rm -rf "$WORK/firecracker"
 mkdir -p "$WORK/firecracker"
 tar -xzf "$ASSETS_ROOT/downloads/$FC_ARCHIVE" -C "$WORK/firecracker"
 FC_SOURCE="$(find "$WORK/firecracker" -type f -name "firecracker-v${FIRECRACKER_VERSION}-${ARCH}" -print -quit)"
@@ -108,21 +122,23 @@ printf '%s  vmlinux-%s\n' "$VMLINUX_SHA" "$KERNEL_VERSION" > "$ASSETS_ROOT/prove
 printf '%s  modules-%s\n' "$MODULE_TREE_SHA" "$KERNEL_VERSION" > "$ASSETS_ROOT/provenance/module-tree.sha256"
 
 printf 'Building Debian %s %s ext4 root filesystem\n' "$DEBIAN_VERSION" "$DEBIAN_SUITE"
-ROOTFS="$ASSETS_ROOT/rootfs/debian-${DEBIAN_VERSION}-${DEBIAN_SUITE}-amd64.ext4.new"
-truncate -s 8G "$ROOTFS"
-mkfs.ext4 -F -L SMP_ROOT "$ROOTFS" >/dev/null
+ROOTFS_NEW="$ASSETS_ROOT/rootfs/debian-${DEBIAN_VERSION}-${DEBIAN_SUITE}-amd64.ext4.new"
+ROOTFS_FINAL="$ASSETS_ROOT/rootfs/debian-${DEBIAN_VERSION}-${DEBIAN_SUITE}-amd64.ext4"
+rm -f "$ROOTFS_NEW"
+truncate -s 8G "$ROOTFS_NEW"
+mkfs.ext4 -F -L SMP_ROOT "$ROOTFS_NEW" >/dev/null
 mkdir -p "$WORK/root"
-mount -o loop "$ROOTFS" "$WORK/root"
-MOUNTED=1
+mount -o loop "$ROOTFS_NEW" "$WORK/root"
+ROOT_MOUNTED=1
 debootstrap --arch=amd64 --variant=minbase "$DEBIAN_SUITE" "$WORK/root" "$DEBIAN_MIRROR"
 cat > "$WORK/root/etc/apt/sources.list" <<SOURCES
 deb $DEBIAN_MIRROR $DEBIAN_SUITE main
 deb $SECURITY_MIRROR ${DEBIAN_SUITE}-security main
 SOURCES
 cp /etc/resolv.conf "$WORK/root/etc/resolv.conf"
-mount --bind /dev "$WORK/root/dev"
-mount -t proc proc "$WORK/root/proc"
-mount -t sysfs sys "$WORK/root/sys"
+mount --bind /dev "$WORK/root/dev"; DEV_MOUNTED=1
+mount -t proc proc "$WORK/root/proc"; PROC_MOUNTED=1
+mount -t sysfs sys "$WORK/root/sys"; SYS_MOUNTED=1
 chroot "$WORK/root" /bin/bash -eux <<'CHROOT'
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
@@ -134,25 +150,29 @@ apt-get install -y --no-install-recommends \
   bridge-utils netcat-openbsd file less vim-tiny
 apt-get clean
 rm -rf /var/lib/apt/lists/*
-mkdir -p /root/.ssh /usr/local/libexec /var/lib/smp-seed /etc/systemd/network
+mkdir -p /root/.ssh /usr/local/libexec /var/lib/smp-seed /etc/systemd/network /etc/ssh/sshd_config.d
 chmod 0700 /root/.ssh
-sed -ri 's/^#?PermitRootLogin .*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
-sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
-printf '\nUsePAM yes\nPubkeyAuthentication yes\nPermitEmptyPasswords no\n' >> /etc/ssh/sshd_config
+cat > /etc/ssh/sshd_config.d/10-smp-root.conf <<'SSH'
+PermitRootLogin prohibit-password
+PasswordAuthentication no
+PubkeyAuthentication yes
+PermitEmptyPasswords no
+SSH
 rm -f /etc/ssh/ssh_host_* /etc/machine-id
 : > /etc/machine-id
 ln -sfn /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 systemctl enable ssh systemd-networkd systemd-resolved
 CHROOT
-umount "$WORK/root/sys"
-umount "$WORK/root/proc"
-umount "$WORK/root/dev"
 
 install -m 0755 "$SOURCE_ROOT/assets/guest/smp-seed-init.sh" "$WORK/root/usr/local/libexec/smp-seed-init"
 install -m 0644 "$SOURCE_ROOT/assets/guest/smp-seed-init.service" "$WORK/root/etc/systemd/system/smp-seed-init.service"
+mkdir -p "$WORK/root/etc/systemd/system/multi-user.target.wants"
 ln -sfn ../smp-seed-init.service "$WORK/root/etc/systemd/system/multi-user.target.wants/smp-seed-init.service"
-chroot "$WORK/root" gcc -O2 -Wall -Wextra -Werror -o /usr/local/libexec/smp-exec-hex /dev/stdin < "$SOURCE_ROOT/assets/guest-tools/smp-exec-hex.c"
-chroot "$WORK/root" gcc -O2 -Wall -Wextra -Werror -o /usr/local/libexec/smp-file-hex /dev/stdin < "$SOURCE_ROOT/assets/guest-tools/smp-file-hex.c"
+install -m 0644 "$SOURCE_ROOT/assets/guest-tools/smp-exec-hex.c" "$WORK/root/tmp/smp-exec-hex.c"
+install -m 0644 "$SOURCE_ROOT/assets/guest-tools/smp-file-hex.c" "$WORK/root/tmp/smp-file-hex.c"
+chroot "$WORK/root" gcc -O2 -Wall -Wextra -Werror -o /usr/local/libexec/smp-exec-hex /tmp/smp-exec-hex.c
+chroot "$WORK/root" gcc -O2 -Wall -Wextra -Werror -o /usr/local/libexec/smp-file-hex /tmp/smp-file-hex.c
+rm -f "$WORK/root/tmp/smp-exec-hex.c" "$WORK/root/tmp/smp-file-hex.c"
 ln "$WORK/root/usr/local/libexec/smp-file-hex" "$WORK/root/usr/local/libexec/smp-file-write-hex"
 ln "$WORK/root/usr/local/libexec/smp-file-hex" "$WORK/root/usr/local/libexec/smp-file-read-hex"
 rsync -aH "$ASSETS_ROOT/kernel/modules-${KERNEL_VERSION}/" "$WORK/root/lib/modules/"
@@ -163,14 +183,20 @@ chroot "$WORK/root" dpkg-query -W -f='${Package}\t${Version}\n' | LC_ALL=C sort 
     exit 65
 }
 
-curl --fail --location --proto '=https' --tlsv1.2 --output "$ASSETS_ROOT/provenance/trixie-InRelease" "$DEBIAN_MIRROR/dists/$DEBIAN_SUITE/InRelease"
+TRIXIE_INRELEASE="$ASSETS_ROOT/downloads/trixie-InRelease"
+download "$DEBIAN_MIRROR/dists/$DEBIAN_SUITE/InRelease" "$TRIXIE_INRELEASE"
+install -m 0644 "$TRIXIE_INRELEASE" "$ASSETS_ROOT/provenance/trixie-InRelease"
 INRELEASE_SHA="$(sha256sum "$ASSETS_ROOT/provenance/trixie-InRelease" | cut -d' ' -f1)"
 sync
-umount "$WORK/root"
-MOUNTED=0
-e2fsck -pf "$ROOTFS" || [[ $? -eq 1 ]]
-ROOTFS_SHA="$(sha256sum "$ROOTFS" | cut -d' ' -f1)"
-mv "$ROOTFS" "$ASSETS_ROOT/rootfs/debian-${DEBIAN_VERSION}-${DEBIAN_SUITE}-amd64.ext4"
+umount "$WORK/root/sys"; SYS_MOUNTED=0
+umount "$WORK/root/proc"; PROC_MOUNTED=0
+umount "$WORK/root/dev"; DEV_MOUNTED=0
+umount "$WORK/root"; ROOT_MOUNTED=0
+e2fsck -pf "$ROOTFS_NEW" || [[ $? -eq 1 ]]
+ROOTFS_SHA="$(sha256sum "$ROOTFS_NEW" | cut -d' ' -f1)"
+rm -f "$ROOTFS_FINAL"
+mv "$ROOTFS_NEW" "$ROOTFS_FINAL"
+chmod 0444 "$ROOTFS_FINAL"
 BUILT_AT="$(date --utc +%Y-%m-%dT%H:%M:%SZ)"
 
 jq -n \
@@ -183,7 +209,7 @@ jq -n \
   --arg kernelSha "$VMLINUX_SHA" \
   --arg kernelVersion "$KERNEL_VERSION" \
   --arg kernelProv "$ASSETS_ROOT/provenance/vmlinux.sha256" \
-  --arg rootfsPath "$ASSETS_ROOT/rootfs/debian-${DEBIAN_VERSION}-${DEBIAN_SUITE}-amd64.ext4" \
+  --arg rootfsPath "$ROOTFS_FINAL" \
   --arg rootfsSha "$ROOTFS_SHA" \
   --arg rootfsVersion "$DEBIAN_VERSION" \
   --arg rootfsProv "$ASSETS_ROOT/provenance/debian-packages.tsv" \
