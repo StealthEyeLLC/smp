@@ -35,6 +35,11 @@ fi
 jq -e '.displayName == "SMP" and .toolContract.onlyTool == "go" and .toolContract.canonicalCallableIdentity == "smp.go"' plugin/SMP.json >/dev/null
 jq -e '.properties.schemaVersion.const == 1 and (.required | index("operation")) != null' plugin/smp.go.schema.json >/dev/null
 
+grep -Fq '/proc/sys/kernel/hostname' assets/guest/smp-seed-init.sh
+! grep -Fq 'hostnamectl set-hostname' assets/guest/smp-seed-init.sh
+grep -Fq 'repair-rootfs.sh' scripts/bootstrap.sh
+grep -Fq 'MACAddress=$MAC' assets/guest/smp-seed-init.sh
+
 TOOLS_LIST_COUNT="$(grep -R --include='*.rs' -F '"name": "go"' src/server.rs | wc -l)"
 [[ "$TOOLS_LIST_COUNT" -eq 1 ]] || {
     printf 'expected one MCP tool registration, found %s\n' "$TOOLS_LIST_COUNT" >&2
