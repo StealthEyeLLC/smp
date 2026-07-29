@@ -22,7 +22,8 @@ The first certified lane is intentionally exact:
 - writable persistent or disposable ext4 machine state;
 - direct key-based root SSH;
 - one local `smp` binary;
-- one optional ChatGPT callable tool: `smp.go`.
+- one optional private ChatGPT plugin named `SMP`;
+- exactly one callable plugin tool: `smp.go`.
 
 PCI means Firecracker's VirtIO PCI transport. The initial contract does not claim VFIO, GPU or arbitrary host PCI passthrough, USB passthrough, cross-architecture emulation, or nested KVM.
 
@@ -40,13 +41,16 @@ Any later safety implementation must govern the completed power surface without 
 
 SMP is a new standalone repository. No code, architecture, schemas, scripts, services, conventions, or implementation fragments are imported from another private StealthEye repository unless the owner explicitly authorizes that exact import.
 
-Public operating systems, kernels, Firecracker, standard packages, language toolchains, and documented platform interfaces are dependencies, not inherited StealthEye implementations.
+Public operating systems, kernels, Firecracker, standard packages, language toolchains, Git, GitHub, and documented platform interfaces are dependencies or development tools, not inherited StealthEye implementations.
+
+SMP may share the authorized Linux VPS with Baby while remaining standalone. It must have its own process, service, endpoint or tunnel identity, credentials, sockets, state root, logs, and recovery behavior. Baby must not be in the SMP runtime path.
 
 ## Canonical documents
 
 1. [SMP Constitution](docs/00-SMP-CONSTITUTION.md) — binding project laws, definitions, constraints, and decision rules.
 2. [Firecracker God-Mode Base](docs/01-FIRECRACKER-GOD-MODE-BASE.md) — exact first-product contract, Firecracker baseline, lifecycle semantics, and standalone ChatGPT control.
 3. [Build and Acceptance Order](docs/02-BUILD-AND-ACCEPTANCE-ORDER.md) — the single remaining implementation mission, execution order, and real-host completion gates.
+4. [Standalone Integrations and Operations](docs/03-STANDALONE-INTEGRATIONS-AND-OPERATIONS.md) — the `SMP` plugin, dedicated VPS connection, GitHub App role, service layout, credentials, upgrade behavior, and independence tests.
 
 ## Local use
 
@@ -60,9 +64,13 @@ That command must prepare or reuse verified pinned assets, create or reuse the d
 
 ## ChatGPT control
 
-SMP includes an optional standalone MCP mode. It does not require Baby or another StealthEye control plane.
+The ChatGPT-facing plugin is named exactly:
 
-The MCP server/app identifier is `smp` and it exposes exactly one tool, `go`, producing the canonical callable identity:
+```text
+SMP
+```
+
+Its underlying MCP server/app identifier is `smp`. It exposes exactly one tool, `go`, producing the canonical callable identity:
 
 ```text
 smp.go
@@ -71,14 +79,24 @@ smp.go
 Canonical path:
 
 ```text
-ChatGPT -> smp.go -> SMP MCP endpoint on the authorized VPS -> SMP core -> Firecracker
+ChatGPT -> SMP plugin -> smp.go -> dedicated SMP connection -> smp serve -> SMP core -> Firecracker
 ```
 
-The first remote operation is `describe`, which returns the live versioned capability catalog, external-component identities, and transport limits. New SMP features extend that runtime catalog rather than adding more callable tools.
+The first remote operation is `describe`, which returns the live versioned capability catalog, external-component identities, schema versions, server identity, and transport limits. New SMP capabilities extend that runtime catalog rather than adding more callable tools.
 
 Long output and long-running operations remain reachable through result handles and the same `smp.go` tool. Request retry identity and detached-operation adoption survive `smp serve` restart without requiring a scheduler, worker pool, database, or generalized job system.
 
 The raw SMP and Firecracker API paths preserve the complete declared control surface. They do not silently add arbitrary host-shell execution, which is outside the guest-root authority contract.
+
+The private plugin may use a dedicated secure MCP tunnel. The SMP tunnel, credential, service, and endpoint must be separate from Baby even when both products use the same VPS.
+
+## GitHub repository access
+
+The existing GitHub App installation for `StealthEyeLLC` was verified on 2026-07-29 to include `StealthEyeLLC/smp` with reported `admin`, `maintain`, `push`, `pull`, and `triage` repository capabilities. The default branch is `main`.
+
+That GitHub App is authorized development and repository-management infrastructure. It may be used to inspect, commit, branch, review, and remotely verify SMP according to its current permissions. It is not part of the installed SMP runtime and must not be required to start or operate microVMs.
+
+Actual repository access must be re-verified before each implementation mission because installation scope and permissions can change. GitHub App private keys and tokens must never be committed, embedded in a guest image, placed in the seed disk, or exposed through `smp.go`.
 
 ## Reboot truth
 
@@ -86,4 +104,4 @@ Firecracker does not provide a general in-place guest reboot contract. On the ca
 
 ## Project status
 
-Canonical specification corrected and complete. No implementation has been certified yet. One implementation mission remains: build, test on the real authorized KVM host, correct failures, certify local SMP and `smp.go`, commit, and remotely verify the finished result.
+The canonical specification is complete across the four documents above. No implementation has been certified yet. One implementation mission remains: build, test on the real authorized KVM host, correct failures, certify local SMP and the private `SMP` plugin with its single `smp.go` tool, commit, and remotely verify the finished result.
