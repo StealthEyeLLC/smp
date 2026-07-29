@@ -2,6 +2,14 @@
 set -euo pipefail
 umask 077
 
+RESUME_PRIMARY=0
+while (($#)); do
+    case "$1" in
+        --resume-primary) RESUME_PRIMARY=1; shift ;;
+        *) printf 'unknown acceptance argument: %s\n' "$1" >&2; exit 64 ;;
+    esac
+done
+
 [[ $(id -u) -eq 0 ]] || { printf 'acceptance.sh requires root\n' >&2; exit 77; }
 command -v smp >/dev/null || { printf 'smp is not installed\n' >&2; exit 69; }
 
@@ -12,8 +20,15 @@ FAILURE=smp-cert-no-fallback
 HOST_PORT=18080
 RESULT_ROOT=/var/lib/smp/results/acceptance
 mkdir -p "$RESULT_ROOT"
-exec > >(tee "$RESULT_ROOT/stdout.log") 2> >(tee "$RESULT_ROOT/stderr.log" >&2)
+if [[ $RESUME_PRIMARY -eq 1 ]]; then
+    exec > >(tee -a "$RESULT_ROOT/stdout.log") 2> >(tee -a "$RESULT_ROOT/stderr.log" >&2)
+else
+    exec > >(tee "$RESULT_ROOT/stdout.log") 2> >(tee "$RESULT_ROOT/stderr.log" >&2)
+fi
 
+stage() {
+    printf '\n=== %s ===\n' "$1"
+}
 cleanup_machine() {
     local name=$1
     smp destroy "$name" --force >/dev/null 2>&1 || true
@@ -25,25 +40,40 @@ cleanup() {
 }
 trap cleanup EXIT
 
+stage 'Host and asset verification'
 smp doctor --fix
 smp assets
 MANIFEST=/var/lib/smp/assets/manifest.json
 BASE_PATH="$(jq -r .rootfs.path "$MANIFEST")"
 BASE_BEFORE="$(sha256sum "$BASE_PATH" | cut -d' ' -f1)"
 
-cleanup_machine "$PRIMARY"
 cleanup
+if [[ $RESUME_PRIMARY -eq 1 ]]; then
+    stage 'Resuming existing ready persistent VM'
+    PRIMARY_STATUS="$(smp status "$PRIMARY" --json)"
+    jq -e '.state == "ready" and (.process.pid | type == "number")' <<<"$PRIMARY_STATUS" >/dev/null || {
+        printf 'existing persistent VM is not ready for acceptance resume\n' >&2
+        exit 65
+    }
+else
+    cleanup_machine "$PRIMARY"
+    stage 'Creating persistent PCI VM'
+    smp create "$PRIMARY" --mode persistent --transport pci --vcpus 2 --memory-mib 2048 --publish "tcp:${HOST_PORT}:8080"
+    smp start "$PRIMARY"
+    smp wait "$PRIMARY" --timeout-seconds 180
+fi
 
-smp create "$PRIMARY" --mode persistent --transport pci --vcpus 2 --memory-mib 2048 --publish "tcp:${HOST_PORT}:8080"
-smp start "$PRIMARY"
-smp wait "$PRIMARY" --timeout-seconds 180
-
+stage 'Guest identity, routing, DNS, and HTTPS'
 [[ "$(smp exec "$PRIMARY" -- id -u)" == 0 ]]
 smp exec "$PRIMARY" -- systemctl is-system-running --wait
 smp exec "$PRIMARY" -- ip route get 1.1.1.1
-smp exec "$PRIMARY" -- grep -Eq '^nameserver [0-9]+(\.[0-9]+){3}$' /etc/resolv.conf
+RESOLV_CONF="$(smp exec "$PRIMARY" -- cat /etc/resolv.conf)"
+printf '%s\n' "$RESOLV_CONF"
+grep -Eq '^nameserver [0-9]+(\.[0-9]+){3}$' <<<"$RESOLV_CONF"
 smp exec "$PRIMARY" -- getent ahostsv4 debian.org
 smp exec "$PRIMARY" -- curl --fail --silent --show-error https://deb.debian.org/ >/dev/null
+
+stage 'Package installation and guest capabilities'
 smp exec "$PRIMARY" -- bash -lc 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends hello'
 smp exec "$PRIMARY" -- hello
 smp exec "$PRIMARY" -- bash -lc 'set -e; truncate -s 64M /root/fs.img; mkfs.ext4 -F /root/fs.img >/dev/null; L=$(losetup --find --show /root/fs.img); mkdir -p /mnt/fs; mount "$L" /mnt/fs; touch /mnt/fs/ok; umount /mnt/fs; losetup -d "$L"'
@@ -68,7 +98,9 @@ smp exec "$PRIMARY" -- bash -lc 'cat >/root/native.c <<EOF
 int main(void){puts("native-ok");return 0;}
 EOF
 gcc -O2 -o /root/native /root/native.c; test "$(/root/native)" = native-ok'
-smp exec "$PRIMARY" -- bash -lc 'nohup sh -c "while true; do printf published-ok | nc -l -p 8080 -q 1; done" >/root/listener.log 2>&1 </dev/null &'
+
+stage 'Published port and exact argv behavior'
+smp exec "$PRIMARY" -- bash -lc 'pkill -f "nc -l -p 8080" >/dev/null 2>&1 || true; nohup sh -c "while true; do printf published-ok | nc -l -p 8080 -q 1; done" >/root/listener.log 2>&1 </dev/null &'
 for _ in $(seq 1 30); do
     if [[ "$(curl --silent --max-time 1 "http://127.0.0.1:${HOST_PORT}" || true)" == published-ok ]]; then break; fi
     sleep 1
@@ -87,6 +119,7 @@ NONZERO=$?
 set -e
 [[ $NONZERO -eq 37 ]]
 
+stage 'File transfer and persistence'
 printf 'file-transfer-ok\n' > "$RESULT_ROOT/upload.txt"
 smp cp "$PRIMARY" "$RESULT_ROOT/upload.txt" guest:/root/upload.txt
 smp exec "$PRIMARY" -- grep -Fx file-transfer-ok /root/upload.txt
@@ -103,6 +136,7 @@ REBOOT_JSON="$(smp reboot "$PRIMARY" --json)"
 NEW_PROCESS="$(jq -c .newProcess <<<"$REBOOT_JSON")"
 [[ "$OLD_PROCESS" != "$NEW_PROCESS" ]]
 
+stage 'MMIO isolation and disposable lifecycle'
 smp create "$SECONDARY" --mode persistent --transport mmio --memory-mib 1024
 smp start "$SECONDARY"
 smp wait "$SECONDARY" --timeout-seconds 180
@@ -119,8 +153,8 @@ smp exec "$DISPOSABLE" -- sh -c 'printf disposable >/root/value'
 smp destroy "$DISPOSABLE" --force
 [[ ! -e "/var/lib/smp/machines/$DISPOSABLE" ]]
 
+stage 'Firecracker API and no-fallback failure behavior'
 smp api "$PRIMARY" --method GET --path /machine-config --json | jq -e '.httpStatus == 200' >/dev/null
-
 cp /bin/false "$RESULT_ROOT/not-firecracker"
 chmod 0755 "$RESULT_ROOT/not-firecracker"
 smp create "$FAILURE" --firecracker "$RESULT_ROOT/not-firecracker" --memory-mib 512
@@ -131,9 +165,9 @@ set -e
 [[ $START_FAILURE -ne 0 ]]
 [[ "$(smp status "$FAILURE" --json | jq -r .state)" != ready ]]
 
+stage 'Base image immutability and cleanup'
 BASE_AFTER="$(sha256sum "$BASE_PATH" | cut -d' ' -f1)"
 [[ "$BASE_BEFORE" == "$BASE_AFTER" ]]
-
 smp stop "$SECONDARY"
 smp destroy "$SECONDARY"
 smp stop "$PRIMARY"
