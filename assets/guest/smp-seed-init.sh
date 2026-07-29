@@ -60,6 +60,19 @@ IPv6AcceptRA=no
 NETWORK
 ln -sfn /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 
+INTERFACE=
+for candidate in /sys/class/net/*; do
+    [[ -r "$candidate/address" ]] || continue
+    if [[ "$(tr '[:upper:]' '[:lower:]' < "$candidate/address")" == "${MAC,,}" ]]; then
+        INTERFACE="${candidate##*/}"
+        break
+    fi
+done
+[[ -n "$INTERFACE" ]] || fail "network interface for MAC $MAC not found"
+ip link set dev "$INTERFACE" up
+ip address replace "$ADDRESS" dev "$INTERFACE"
+ip route replace default via "$GATEWAY" dev "$INTERFACE"
+
 if [[ -f "$MOUNT/files.tar" ]]; then
     tar --extract --file "$MOUNT/files.tar" --directory / --no-same-owner --numeric-owner
 fi
