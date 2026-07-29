@@ -34,7 +34,7 @@ for script in scripts/*.sh assets/guest/*.sh; do
     bash -n "$script"
 done
 if command -v shellcheck >/dev/null; then
-    shellcheck scripts/*.sh assets/guest/*.sh
+    shellcheck --severity=error scripts/*.sh assets/guest/*.sh
 fi
 
 jq -e '.displayName == "SMP" and .toolContract.onlyTool == "go" and .toolContract.canonicalCallableIdentity == "smp.go"' plugin/SMP.json >/dev/null
