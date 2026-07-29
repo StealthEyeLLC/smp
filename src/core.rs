@@ -10,7 +10,7 @@ use crate::state::{
     load_machine, remove_machine_dir, safe_remove_file, save_machine, MachineLock, RuntimePaths,
 };
 use crate::util::{now_unix_ms, run_output, sha256_file, validate_machine_name};
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
@@ -50,6 +50,12 @@ impl Default for CreateOptions {
             offline: false,
         }
     }
+}
+
+fn default_boot_args(root_uuid: &str) -> String {
+    format!(
+        "root=UUID={root_uuid} rw console=ttyS0 reboot=k panic=1 pci=on systemd.unified_cgroup_hierarchy=1"
+    )
 }
 
 pub fn create(paths: &RuntimePaths, options: &CreateOptions) -> Result<MachineRecord> {
@@ -104,11 +110,10 @@ pub fn create(paths: &RuntimePaths, options: &CreateOptions) -> Result<MachineRe
         transport: options.transport.clone(),
         vcpu_count: options.vcpu_count,
         memory_mib: options.memory_mib,
-        boot_args: options.boot_args.clone().unwrap_or_else(|| {
-            format!(
-                "root=UUID={root_uuid} rw console=ttyS0 noapic reboot=k panic=1 pci=on systemd.unified_cgroup_hierarchy=1"
-            )
-        }),
+        boot_args: options
+            .boot_args
+            .clone()
+            .unwrap_or_else(|| default_boot_args(&root_uuid)),
         firecracker,
         kernel,
         rootfs_base: root_identity.clone(),
@@ -185,7 +190,13 @@ pub fn start(paths: &RuntimePaths, name: &str, foreground: bool) -> Result<Machi
             save_machine(paths, &mut record)?;
             if !foreground {
                 if let Err(error) = guest::wait_for_ssh(&record, Duration::from_secs(120)) {
-                    record.state = if record.process.as_ref().map(firecracker::verify_process).transpose()?.unwrap_or(false) {
+                    record.state = if record
+                        .process
+                        .as_ref()
+                        .map(firecracker::verify_process)
+                        .transpose()?
+                        .unwrap_or(false)
+                    {
                         MachineState::Running
                     } else {
                         MachineState::Crashed
@@ -306,7 +317,10 @@ pub fn stop(paths: &RuntimePaths, name: &str) -> Result<MachineRecord> {
 pub fn kill(paths: &RuntimePaths, name: &str) -> Result<MachineRecord> {
     let _lock = MachineLock::acquire(paths, name)?;
     let mut record = load_machine(paths, name)?;
-    let identity = record.process.clone().ok_or_else(|| anyhow::anyhow!("machine {name} has no recorded process"))?;
+    let identity = record
+        .process
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("machine {name} has no recorded process"))?;
     firecracker::signal_verified(&identity, libc::SIGKILL)?;
     if !firecracker::wait_for_exit(&identity, Duration::from_secs(10))? {
         bail!("verified Firecracker process did not exit after SIGKILL");
@@ -329,7 +343,10 @@ fn finish_stopped(paths: &RuntimePaths, record: &mut MachineRecord) -> Result<()
 
 pub fn reboot(paths: &RuntimePaths, name: &str) -> Result<(crate::model::ProcessIdentity, MachineRecord)> {
     let before = status(paths, name)?;
-    let old = before.process.clone().ok_or_else(|| anyhow::anyhow!("machine {name} is not running"))?;
+    let old = before
+        .process
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("machine {name} is not running"))?;
     let _ = guest::exec_capture(&before, &["systemctl".to_owned(), "reboot".to_owned()], None);
     if !firecracker::wait_for_exit(&old, Duration::from_secs(30))? {
         let _ = stop(paths, name)?;
@@ -339,7 +356,10 @@ pub fn reboot(paths: &RuntimePaths, name: &str) -> Result<(crate::model::Process
         finish_stopped(paths, &mut record)?;
     }
     let current = start(paths, name, false)?;
-    let new = current.process.as_ref().ok_or_else(|| anyhow::anyhow!("restarted machine has no process identity"))?;
+    let new = current
+        .process
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("restarted machine has no process identity"))?;
     if old.pid == new.pid && old.start_time_ticks == new.start_time_ticks {
         bail!("reboot did not produce a new Firecracker process identity");
     }
@@ -429,7 +449,10 @@ pub fn api(
 pub fn verify_base_immutable(record: &MachineRecord) -> Result<()> {
     let observed = sha256_file(Path::new(&record.rootfs_base.path))?;
     if observed != record.rootfs_base.sha256 {
-        bail!("immutable base image digest changed: expected {}, observed {observed}", record.rootfs_base.sha256);
+        bail!(
+            "immutable base image digest changed: expected {}, observed {observed}",
+            record.rootfs_base.sha256
+        );
     }
     Ok(())
 }
@@ -467,11 +490,27 @@ fn filesystem_uuid(path: &Path) -> Result<String> {
         ],
     )?;
     if !output.status.success() {
-        bail!("blkid failed for {}: {}", path.display(), String::from_utf8_lossy(&output.stderr).trim());
+        bail!(
+            "blkid failed for {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
     let value = String::from_utf8(output.stdout)?.trim().to_owned();
     if value.is_empty() {
         bail!("filesystem {} has no UUID", path.display());
     }
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_pci_boot_args_do_not_disable_apic() {
+        let args = default_boot_args("test");
+        assert!(!args.split_whitespace().any(|value| value == "noapic"));
+        assert!(args.split_whitespace().any(|value| value == "pci=on"));
+    }
 }
