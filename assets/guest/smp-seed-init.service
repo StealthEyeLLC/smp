@@ -1,8 +1,8 @@
 [Unit]
 Description=SMP one-shot machine initialization
-After=local-fs.target systemd-tmpfiles-setup.service
-Before=network-pre.target systemd-networkd.service ssh.service
-Wants=network-pre.target
+After=local-fs.target systemd-tmpfiles-setup.service systemd-networkd.service systemd-resolved.service
+Wants=systemd-networkd.service systemd-resolved.service
+Before=ssh.service
 ConditionPathExists=!/var/lib/smp-seed/complete
 
 [Service]
