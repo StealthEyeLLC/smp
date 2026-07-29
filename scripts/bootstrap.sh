@@ -7,6 +7,7 @@ COMMIT=
 SKIP_PACKAGES=0
 SKIP_TUNNEL_PROMPT=0
 RUST_TOOLCHAIN=1.97.1
+RUST_HOST=x86_64-unknown-linux-gnu
 CLOUDFLARED_VERSION=2026.5.2
 CLOUDFLARED_SHA256=5286698547f03df745adb2355f04c12dde52ef425491e81f433642d695521886
 CLOUDFLARED_URL="https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64"
@@ -44,17 +45,29 @@ for tool in rustup curl git install systemctl sha256sum jq tar; do
     command -v "$tool" >/dev/null || { printf 'missing bootstrap tool: %s\n' "$tool" >&2; exit 69; }
 done
 
-install -d -m 0700 /var/lib/smp /var/lib/smp/toolchain /var/lib/smp/toolchain/cargo /var/lib/smp/toolchain/rustup
-export CARGO_HOME=/var/lib/smp/toolchain/cargo
+install -d -m 0700 /var/lib/smp /var/lib/smp/toolchain /var/lib/smp/toolchain/rustup /var/lib/smp/toolchain/cargo
 export RUSTUP_HOME=/var/lib/smp/toolchain/rustup
-export RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN"
-rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-RUSTC_VERSION="$(rustup run "$RUST_TOOLCHAIN" rustc --version)"
-CARGO_VERSION="$(rustup run "$RUST_TOOLCHAIN" cargo --version)"
+unset CARGO_HOME RUSTUP_TOOLCHAIN || true
+RUSTUP_BIN="$(command -v rustup)"
+"$RUSTUP_BIN" toolchain install "$RUST_TOOLCHAIN" --profile minimal
+TOOLCHAIN_ROOT="$RUSTUP_HOME/toolchains/${RUST_TOOLCHAIN}-${RUST_HOST}"
+RUSTC_BIN="$TOOLCHAIN_ROOT/bin/rustc"
+RUSTDOC_BIN="$TOOLCHAIN_ROOT/bin/rustdoc"
+CARGO_BIN="$TOOLCHAIN_ROOT/bin/cargo"
+for tool in "$RUSTC_BIN" "$RUSTDOC_BIN" "$CARGO_BIN"; do
+    [[ -x $tool ]] || { printf 'pinned Rust tool is missing: %s\n' "$tool" >&2; exit 69; }
+done
+RUSTC_VERSION="$("$RUSTC_BIN" --version)"
+CARGO_VERSION="$("$CARGO_BIN" --version)"
 [[ $RUSTC_VERSION == "rustc ${RUST_TOOLCHAIN} "* ]] || { printf 'unexpected Rust compiler: %s\n' "$RUSTC_VERSION" >&2; exit 69; }
 [[ $CARGO_VERSION == "cargo ${RUST_TOOLCHAIN} "* ]] || { printf 'unexpected Cargo: %s\n' "$CARGO_VERSION" >&2; exit 69; }
+export CARGO_HOME=/var/lib/smp/toolchain/cargo
+export RUSTC="$RUSTC_BIN"
+export RUSTDOC="$RUSTDOC_BIN"
+export PATH="$TOOLCHAIN_ROOT/bin:$PATH"
 printf 'Using %s\n' "$RUSTC_VERSION"
 printf 'Using %s\n' "$CARGO_VERSION"
+printf 'Toolchain root: %s\n' "$TOOLCHAIN_ROOT"
 
 BUILD_ROOT="$(mktemp -d /var/tmp/smp-bootstrap.XXXXXX)"
 TMP_CLOUDFLARED=
@@ -70,17 +83,17 @@ BUILD_SOURCE="$BUILD_ROOT/source"
 printf 'Resolving the locked SMP dependency graph\n'
 (
     cd "$BUILD_SOURCE"
-    rustup run "$RUST_TOOLCHAIN" cargo generate-lockfile
-    rustup run "$RUST_TOOLCHAIN" cargo fetch --locked
+    "$CARGO_BIN" generate-lockfile
+    "$CARGO_BIN" fetch --locked
 )
 LOCK_SHA="$(sha256sum "$BUILD_SOURCE/Cargo.lock" | cut -d' ' -f1)"
 
 printf 'Checking SMP repository commit %s\n' "$COMMIT"
-SMP_RUST_TOOLCHAIN="$RUST_TOOLCHAIN" SMP_CARGO_LOCKED=1 bash "$BUILD_SOURCE/scripts/test-repository.sh"
+SMP_CARGO_BIN="$CARGO_BIN" SMP_CARGO_LOCKED=1 bash "$BUILD_SOURCE/scripts/test-repository.sh"
 printf 'Building SMP commit %s\n' "$COMMIT"
 (
     cd "$BUILD_SOURCE"
-    SMP_BUILD_COMMIT="$COMMIT" rustup run "$RUST_TOOLCHAIN" cargo build --release --locked
+    SMP_BUILD_COMMIT="$COMMIT" "$CARGO_BIN" build --release --locked
 )
 CANDIDATE="$BUILD_SOURCE/target/release/smp"
 [[ -x $CANDIDATE ]] || { printf 'SMP release binary was not produced\n' >&2; exit 70; }
@@ -123,6 +136,7 @@ cat > /etc/smp/install.json.new <<INSTALL
   "smpVersion": "$INSTALLED_VERSION",
   "binarySha256": "$CANDIDATE_SHA",
   "rustToolchain": "$RUST_TOOLCHAIN",
+  "rustToolchainRoot": "$TOOLCHAIN_ROOT",
   "cargoLockSha256": "$LOCK_SHA",
   "cloudflaredVersion": "$CLOUDFLARED_VERSION",
   "cloudflaredSha256": "$CLOUDFLARED_SHA256",
