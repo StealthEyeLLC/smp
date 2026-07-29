@@ -23,6 +23,11 @@ OUTBOUND="$(ip -o route show default | awk 'NR == 1 {for (i=1; i<=NF; i++) if ($
 IFS=. read -r A B C _ <<<"$GATEWAY"
 SUBNET="$A.$B.$C.0/$PREFIX"
 sysctl -q -w net.ipv4.ip_forward=1
+sysctl -q -w net.ipv4.conf.all.route_localnet=1
+sysctl -q -w net.ipv4.conf.default.route_localnet=1
+sysctl -q -w net.ipv4.conf.default.rp_filter=0
+sysctl -q -w "net.ipv4.conf.${TAP}.route_localnet=1"
+sysctl -q -w "net.ipv4.conf.${TAP}.rp_filter=0"
 
 ensure_rule() {
     local table=$1 chain=$2
@@ -35,23 +40,27 @@ ensure_rule() {
 }
 
 # Insert into the host's canonical iptables-nft chains so these rules precede
-# a distribution firewall's default FORWARD drop.
+# a distribution firewall's default drops. Local host-to-guest traffic uses
+# OUTPUT/INPUT; routed guest and published-port traffic uses FORWARD.
+ensure_rule filter OUTPUT -o "$TAP" -j ACCEPT
+ensure_rule filter INPUT -i "$TAP" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 ensure_rule filter FORWARD -i "$TAP" -j ACCEPT
 ensure_rule filter FORWARD -o "$TAP" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 ensure_rule nat POSTROUTING -s "$SUBNET" -o "$OUTBOUND" -j MASQUERADE
 
-# Locally generated traffic does not traverse PREROUTING. Mirror every SMP
-# published TCP/UDP port into nat OUTPUT, then SNAT loopback-originated traffic
-# to the TAP gateway so the guest can return it without loopback martian drops.
+# Mirror every published port into nat OUTPUT for host-local clients. External
+# clients continue to use SMP's native PREROUTING DNAT. Loopback-originated
+# traffic is SNATed to the TAP gateway so the guest has a valid return path.
 while IFS=$'\t' read -r protocol host_port guest_port; do
     [[ -n $protocol ]] || continue
-    ensure_rule nat OUTPUT -p "$protocol" -d 127.0.0.1 --dport "$host_port" -j DNAT --to-destination "$GUEST:$guest_port"
-    ensure_rule nat POSTROUTING -p "$protocol" -s 127.0.0.1 -d "$GUEST" --dport "$guest_port" -j SNAT --to-source "$GATEWAY"
+    ensure_rule filter FORWARD -o "$TAP" -p "$protocol" -d "$GUEST" --dport "$guest_port" -m conntrack --ctstate NEW,ESTABLISHED,RELATED -j ACCEPT
+    ensure_rule nat OUTPUT -p "$protocol" -m addrtype --dst-type LOCAL --dport "$host_port" -j DNAT --to-destination "$GUEST:$guest_port"
+    ensure_rule nat POSTROUTING -p "$protocol" -s 127.0.0.0/8 -d "$GUEST" --dport "$guest_port" -j SNAT --to-source "$GATEWAY"
 done < <(jq -r '.network.publishedPorts[]? | [.protocol, (.hostPort|tostring), (.guestPort|tostring)] | @tsv' <<<"$STATUS")
 
 printf 'Host forwarding repaired for %s via %s -> %s\n' "$MACHINE" "$TAP" "$OUTBOUND"
 
-# Prove routed IP connectivity before DNS is tested by acceptance.
+# Prove routed IP connectivity before DNS or published-port tests run.
 for _ in $(seq 1 10); do
     if smp exec "$MACHINE" -- ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1; then
         printf 'Guest direct IPv4 connectivity verified\n'
