@@ -47,7 +47,7 @@ if [[ $SKIP_PACKAGES -eq 0 ]]; then
       xz-utils zstd bison flex libelf-dev bc dwarves rsync file kmod procps shellcheck
 fi
 
-for tool in curl git install systemctl sha256sum jq tar awk df; do
+for tool in awk curl debugfs df git install jq losetup sha256sum systemctl tar; do
     command -v "$tool" >/dev/null || { printf 'missing bootstrap tool: %s\n' "$tool" >&2; exit 69; }
 done
 
@@ -121,7 +121,7 @@ install -d -m 0755 /usr/local/bin /usr/lib/smp /usr/lib/smp/assets /etc/smp /etc
 install -d -m 0700 /var/lib/smp /var/lib/smp/machines /var/lib/smp/assets /var/lib/smp/requests /var/lib/smp/results /var/lib/smp/provenance /run/smp
 install -m 0755 "$CANDIDATE" /usr/local/bin/smp.new
 mv -f /usr/local/bin/smp.new /usr/local/bin/smp
-for script in build-assets.sh create-seed.sh test-repository.sh acceptance.sh prompt2-handoff.sh uninstall.sh; do
+for script in build-assets.sh create-seed.sh repair-rootfs.sh test-repository.sh acceptance.sh prompt2-handoff.sh uninstall.sh; do
     install -m 0755 "$BUILD_SOURCE/scripts/$script" "/usr/lib/smp/$script"
 done
 rm -rf /usr/lib/smp/assets.new
@@ -216,7 +216,18 @@ if [[ $CONTROL_PLANE_ONLY -eq 0 ]]; then
         fi
     fi
 
-    printf 'Building and verifying canonical Firecracker, Linux, and Debian assets\n'
+    for machine in smp-cert-disposable smp-cert-no-fallback smp-cert-isolated smp-cert-persistent; do
+        /usr/local/bin/smp destroy "$machine" --force >/dev/null 2>&1 || true
+    done
+    if [[ -r /var/lib/smp/assets/manifest.json ]]; then
+        printf 'Reconciling canonical guest initializer in existing rootfs\n'
+        /usr/lib/smp/repair-rootfs.sh \
+          --assets-root /var/lib/smp/assets \
+          --source-root /usr/lib/smp/assets \
+          --build-commit "$COMMIT"
+    fi
+
+    printf 'Preparing and verifying canonical Firecracker, Linux, and Debian assets\n'
     /usr/local/bin/smp --json assets | tee /var/lib/smp/provenance/assets.json >/dev/null
     jq -e '.schemaVersion == 1 and .architecture == "x86_64" and .firecracker.version == "1.15.1" and .kernel.version == "6.1.177" and .debianVersion == "13.6"' /var/lib/smp/assets/manifest.json >/dev/null
     for path in \
@@ -226,6 +237,7 @@ if [[ $CONTROL_PLANE_ONLY -eq 0 ]]; then
         [[ -f $path ]] || { printf 'certified asset missing: %s\n' "$path" >&2; exit 65; }
     done
 
+    rm -f /var/lib/smp/results/acceptance/result.json
     printf 'Running complete real Firecracker acceptance\n'
     /usr/lib/smp/acceptance.sh
     jq -e '.result == "PASS"' /var/lib/smp/results/acceptance/result.json >/dev/null
