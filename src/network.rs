@@ -1,8 +1,20 @@
 use crate::model::{NetworkRecord, PublishedPort};
 use crate::util::{run_output, sha256_bytes};
 use anyhow::{bail, Context, Result};
+use std::collections::BTreeSet;
 use std::ffi::OsString;
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
+
+const IPTABLES_WAIT_SECONDS: &str = "5";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ChainPlan {
+    table: &'static str,
+    builtin: &'static str,
+    owned: String,
+    jump_comment: String,
+    rules: Vec<Vec<String>>,
+}
 
 pub fn default_network(name: &str, published_ports: Vec<PublishedPort>) -> NetworkRecord {
     let digest = sha256_bytes(name.as_bytes());
@@ -24,7 +36,58 @@ pub fn default_network(name: &str, published_ports: Vec<PublishedPort>) -> Netwo
     }
 }
 
-pub fn check_collision(network: &NetworkRecord) -> Result<()> {
+pub fn create(name: &str, network: &NetworkRecord) -> Result<()> {
+    if !network.managed {
+        return Ok(());
+    }
+    cleanup_owned_chains(name)?;
+    remove_legacy_nft_table(name);
+    remove_legacy_direct_rules(network)?;
+    check_collision(network)?;
+
+    run_checked(
+        "ip",
+        &["tuntap", "add", "dev", &network.tap_name, "mode", "tap"],
+    )?;
+    let result = (|| {
+        let address = format!("{}/{}", network.gateway_address, network.prefix_length);
+        run_checked("ip", &["addr", "add", &address, "dev", &network.tap_name])?;
+        run_checked("ip", &["link", "set", "dev", &network.tap_name, "up"])?;
+        configure_host_network(name, network)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = cleanup(name, network);
+    }
+    result
+}
+
+pub fn cleanup(name: &str, network: &NetworkRecord) -> Result<()> {
+    if !network.managed {
+        return Ok(());
+    }
+    let rules_result = cleanup_host_rules(name, network);
+    let link_result = if exists(network) {
+        run_checked("ip", &["link", "delete", "dev", &network.tap_name])
+    } else {
+        Ok(())
+    };
+    rules_result?;
+    link_result
+}
+
+pub fn exists(network: &NetworkRecord) -> bool {
+    Command::new("ip")
+        .args(["link", "show", "dev", &network.tap_name])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn check_collision(network: &NetworkRecord) -> Result<()> {
+    validate_published_ports(network)?;
     let output = run_output(
         "ip",
         &[
@@ -55,121 +118,469 @@ pub fn check_collision(network: &NetworkRecord) -> Result<()> {
             network.gateway_address
         );
     }
-    Ok(())
+    check_published_port_collisions(network)
 }
 
-pub fn create(name: &str, network: &NetworkRecord) -> Result<()> {
-    if !network.managed {
-        return Ok(());
-    }
-    check_collision(network)?;
-    run_checked(
-        "ip",
-        &["tuntap", "add", "dev", &network.tap_name, "mode", "tap"],
-    )?;
-    let result = (|| {
-        run_checked(
-            "ip",
-            &[
-                "addr",
-                "add",
-                &format!(
-                    "{}/{}",
-                    network.gateway_address, network.prefix_length
-                ),
-                "dev",
-                &network.tap_name,
-            ],
-        )?;
-        run_checked("ip", &["link", "set", "dev", &network.tap_name, "up"])?;
-        install_nftables(name, network)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = cleanup(name, network);
-    }
-    result
-}
-
-pub fn cleanup(name: &str, network: &NetworkRecord) -> Result<()> {
-    if !network.managed {
-        return Ok(());
-    }
-    let table = table_name(name);
-    let _ = run_checked("nft", &["delete", "table", "ip", &table]);
-    let _ = run_checked("ip", &["link", "delete", "dev", &network.tap_name]);
-    Ok(())
-}
-
-pub fn exists(network: &NetworkRecord) -> bool {
-    Command::new("ip")
-        .args(["link", "show", "dev", &network.tap_name])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
-}
-
-fn install_nftables(name: &str, network: &NetworkRecord) -> Result<()> {
-    let table = table_name(name);
+fn configure_host_network(name: &str, network: &NetworkRecord) -> Result<()> {
+    ensure_sysctls(network)?;
     let outbound = default_route_interface()?;
-    let mut prerouting_rules = String::new();
+    cleanup_owned_chains(name)?;
+    for plan in chain_plans(name, network, &outbound)? {
+        install_chain(&plan)?;
+    }
+    Ok(())
+}
+
+fn ensure_sysctls(network: &NetworkRecord) -> Result<()> {
+    for setting in [
+        "net.ipv4.ip_forward=1".to_owned(),
+        "net.ipv4.conf.default.rp_filter=0".to_owned(),
+        format!("net.ipv4.conf.{}.rp_filter=0", network.tap_name),
+    ] {
+        run_checked("sysctl", &["-q", "-w", &setting])?;
+    }
+    if !network.published_ports.is_empty() {
+        for setting in [
+            "net.ipv4.conf.all.route_localnet=1".to_owned(),
+            "net.ipv4.conf.default.route_localnet=1".to_owned(),
+            format!("net.ipv4.conf.{}.route_localnet=1", network.tap_name),
+        ] {
+            run_checked("sysctl", &["-q", "-w", &setting])?;
+        }
+    }
+    Ok(())
+}
+
+fn chain_plans(name: &str, network: &NetworkRecord, outbound: &str) -> Result<Vec<ChainPlan>> {
+    validate_published_ports(network)?;
+    let suffix = chain_suffix(name);
+    let tag = format!("smp:{suffix}");
+    let subnet = subnet_cidr(network);
+
+    let input = vec![commented_rule(
+        vec![
+            "-i",
+            &network.tap_name,
+            "-s",
+            &network.guest_address,
+            "-m",
+            "conntrack",
+            "--ctstate",
+            "ESTABLISHED,RELATED",
+        ],
+        &format!("{tag}:host-input"),
+        vec!["-j", "ACCEPT"],
+    )];
+    let output = vec![commented_rule(
+        vec!["-o", &network.tap_name, "-d", &network.guest_address],
+        &format!("{tag}:host-output"),
+        vec!["-j", "ACCEPT"],
+    )];
+    let mut forward = vec![
+        commented_rule(
+            vec!["-i", &network.tap_name, "-s", &subnet],
+            &format!("{tag}:guest-forward"),
+            vec!["-j", "ACCEPT"],
+        ),
+        commented_rule(
+            vec![
+                "-o",
+                &network.tap_name,
+                "-d",
+                &subnet,
+                "-m",
+                "conntrack",
+                "--ctstate",
+                "ESTABLISHED,RELATED",
+            ],
+            &format!("{tag}:guest-return"),
+            vec!["-j", "ACCEPT"],
+        ),
+    ];
+    let mut prerouting = Vec::new();
+    let mut nat_output = Vec::new();
+    let mut postrouting = vec![commented_rule(
+        vec!["-s", &subnet, "-o", outbound],
+        &format!("{tag}:masquerade"),
+        vec!["-j", "MASQUERADE"],
+    )];
+
     for port in &network.published_ports {
-        let protocol = match port.protocol.as_str() {
-            "tcp" => "tcp",
-            "udp" => "udp",
-            other => bail!("unsupported port protocol {other}"),
-        };
-        prerouting_rules.push_str(&format!(
-            "    {protocol} dport {} dnat to {}:{}\n",
-            port.host_port, network.guest_address, port.guest_port
+        let protocol = checked_protocol(&port.protocol)?;
+        let host_port = port.host_port.to_string();
+        let guest_port = port.guest_port.to_string();
+        let destination = format!("{}:{}", network.guest_address, port.guest_port);
+        let port_tag = format!("{tag}:{protocol}:{}:{}", port.host_port, port.guest_port);
+        forward.push(commented_rule(
+            vec![
+                "-o",
+                &network.tap_name,
+                "-p",
+                protocol,
+                "-d",
+                &network.guest_address,
+                "--dport",
+                &guest_port,
+                "-m",
+                "conntrack",
+                "--ctstate",
+                "NEW,ESTABLISHED,RELATED",
+            ],
+            &format!("{port_tag}:forward"),
+            vec!["-j", "ACCEPT"],
+        ));
+        prerouting.push(commented_rule(
+            vec!["-p", protocol, "--dport", &host_port],
+            &format!("{port_tag}:prerouting"),
+            vec!["-j", "DNAT", "--to-destination", &destination],
+        ));
+        nat_output.push(commented_rule(
+            vec![
+                "-p",
+                protocol,
+                "-m",
+                "addrtype",
+                "--dst-type",
+                "LOCAL",
+                "--dport",
+                &host_port,
+            ],
+            &format!("{port_tag}:output"),
+            vec!["-j", "DNAT", "--to-destination", &destination],
+        ));
+        postrouting.push(commented_rule(
+            vec![
+                "-p",
+                protocol,
+                "-s",
+                "127.0.0.0/8",
+                "-d",
+                &network.guest_address,
+                "--dport",
+                &guest_port,
+            ],
+            &format!("{port_tag}:hairpin"),
+            vec!["-j", "SNAT", "--to-source", &network.gateway_address],
         ));
     }
-    let script = format!(
-        "table ip {table} {{\n\
-         chain prerouting {{\n\
-           type nat hook prerouting priority dstnat; policy accept;\n\
-         {prerouting_rules}\
-         }}\n\
-         chain forward {{\n\
-           type filter hook forward priority filter; policy accept;\n\
-           iifname \"{}\" accept\n\
-           oifname \"{}\" ct state established,related accept\n\
-         }}\n\
-         chain postrouting {{\n\
-           type nat hook postrouting priority srcnat; policy accept;\n\
-           ip saddr {}/{} oifname \"{}\" masquerade\n\
-         }}\n\
-         }}\n",
-        network.tap_name,
-        network.tap_name,
-        subnet(network),
-        network.prefix_length,
-        outbound
-    );
 
-    let mut child = Command::new("nft")
-        .args(["-f", "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("start nft")?;
-    use std::io::Write;
-    child
-        .stdin
-        .as_mut()
-        .expect("piped stdin")
-        .write_all(script.as_bytes())?;
-    let output = child.wait_with_output()?;
+    Ok(vec![
+        chain_plan("filter", "INPUT", &suffix, "I", input),
+        chain_plan("filter", "OUTPUT", &suffix, "O", output),
+        chain_plan("filter", "FORWARD", &suffix, "F", forward),
+        chain_plan("nat", "PREROUTING", &suffix, "PR", prerouting),
+        chain_plan("nat", "OUTPUT", &suffix, "NO", nat_output),
+        chain_plan("nat", "POSTROUTING", &suffix, "PO", postrouting),
+    ])
+}
+
+fn chain_plan(
+    table: &'static str,
+    builtin: &'static str,
+    suffix: &str,
+    code: &str,
+    rules: Vec<Vec<String>>,
+) -> ChainPlan {
+    ChainPlan {
+        table,
+        builtin,
+        owned: format!("SMP_{code}_{suffix}"),
+        jump_comment: format!("smp:{suffix}:jump:{}", builtin.to_ascii_lowercase()),
+        rules,
+    }
+}
+
+fn commented_rule(matches: Vec<&str>, comment: &str, target: Vec<&str>) -> Vec<String> {
+    matches
+        .into_iter()
+        .chain(["-m", "comment", "--comment", comment])
+        .chain(target)
+        .map(str::to_owned)
+        .collect()
+}
+
+fn install_chain(plan: &ChainPlan) -> Result<()> {
+    if !iptables_success(plan.table, &["-L", &plan.owned, "-n"])? {
+        iptables_checked(plan.table, &["-N", &plan.owned])?;
+    }
+    for rule in &plan.rules {
+        let mut check = vec!["-C".to_owned(), plan.owned.clone()];
+        check.extend(rule.clone());
+        if !iptables_success_owned(plan.table, &check)? {
+            let mut append = vec!["-A".to_owned(), plan.owned.clone()];
+            append.extend(rule.clone());
+            iptables_checked_owned(plan.table, &append)?;
+        }
+    }
+    let jump = jump_rule(plan);
+    let mut check = vec!["-C".to_owned(), plan.builtin.to_owned()];
+    check.extend(jump.clone());
+    if !iptables_success_owned(plan.table, &check)? {
+        let mut insert = vec!["-I".to_owned(), plan.builtin.to_owned(), "1".to_owned()];
+        insert.extend(jump);
+        iptables_checked_owned(plan.table, &insert)?;
+    }
+    Ok(())
+}
+
+fn cleanup_host_rules(name: &str, network: &NetworkRecord) -> Result<()> {
+    cleanup_owned_chains(name)?;
+    remove_legacy_nft_table(name);
+    remove_legacy_direct_rules(network)
+}
+
+fn cleanup_owned_chains(name: &str) -> Result<()> {
+    for plan in chain_bindings(name) {
+        let jump = jump_rule(&plan);
+        let mut check = vec!["-C".to_owned(), plan.builtin.to_owned()];
+        check.extend(jump.clone());
+        while iptables_success_owned(plan.table, &check)? {
+            let mut delete = vec!["-D".to_owned(), plan.builtin.to_owned()];
+            delete.extend(jump.clone());
+            iptables_checked_owned(plan.table, &delete)?;
+        }
+        if iptables_success(plan.table, &["-L", &plan.owned, "-n"])? {
+            iptables_checked(plan.table, &["-F", &plan.owned])?;
+            iptables_checked(plan.table, &["-X", &plan.owned])?;
+        }
+    }
+    Ok(())
+}
+
+fn chain_bindings(name: &str) -> Vec<ChainPlan> {
+    let suffix = chain_suffix(name);
+    vec![
+        chain_plan("filter", "INPUT", &suffix, "I", Vec::new()),
+        chain_plan("filter", "OUTPUT", &suffix, "O", Vec::new()),
+        chain_plan("filter", "FORWARD", &suffix, "F", Vec::new()),
+        chain_plan("nat", "PREROUTING", &suffix, "PR", Vec::new()),
+        chain_plan("nat", "OUTPUT", &suffix, "NO", Vec::new()),
+        chain_plan("nat", "POSTROUTING", &suffix, "PO", Vec::new()),
+    ]
+}
+
+fn jump_rule(plan: &ChainPlan) -> Vec<String> {
+    [
+        "-m".to_owned(),
+        "comment".to_owned(),
+        "--comment".to_owned(),
+        plan.jump_comment.clone(),
+        "-j".to_owned(),
+        plan.owned.clone(),
+    ]
+    .to_vec()
+}
+
+fn remove_legacy_nft_table(name: &str) {
+    let _ = run_checked("nft", &["delete", "table", "ip", &legacy_table_name(name)]);
+}
+
+fn remove_legacy_direct_rules(network: &NetworkRecord) -> Result<()> {
+    let subnet = subnet_cidr(network);
+    delete_rule_all(
+        "filter",
+        "OUTPUT",
+        &["-o", &network.tap_name, "-j", "ACCEPT"],
+    )?;
+    delete_rule_all(
+        "filter",
+        "INPUT",
+        &[
+            "-i",
+            &network.tap_name,
+            "-m",
+            "conntrack",
+            "--ctstate",
+            "ESTABLISHED,RELATED",
+            "-j",
+            "ACCEPT",
+        ],
+    )?;
+    delete_rule_all(
+        "filter",
+        "FORWARD",
+        &["-i", &network.tap_name, "-j", "ACCEPT"],
+    )?;
+    delete_rule_all(
+        "filter",
+        "FORWARD",
+        &[
+            "-o",
+            &network.tap_name,
+            "-m",
+            "conntrack",
+            "--ctstate",
+            "ESTABLISHED,RELATED",
+            "-j",
+            "ACCEPT",
+        ],
+    )?;
+    if let Ok(outbound) = default_route_interface() {
+        delete_rule_all(
+            "nat",
+            "POSTROUTING",
+            &["-s", &subnet, "-o", &outbound, "-j", "MASQUERADE"],
+        )?;
+    }
+    for port in &network.published_ports {
+        let protocol = checked_protocol(&port.protocol)?;
+        let host_port = port.host_port.to_string();
+        let guest_port = port.guest_port.to_string();
+        let destination = format!("{}:{}", network.guest_address, port.guest_port);
+        delete_rule_all(
+            "filter",
+            "FORWARD",
+            &[
+                "-o",
+                &network.tap_name,
+                "-p",
+                protocol,
+                "-d",
+                &network.guest_address,
+                "--dport",
+                &guest_port,
+                "-m",
+                "conntrack",
+                "--ctstate",
+                "NEW,ESTABLISHED,RELATED",
+                "-j",
+                "ACCEPT",
+            ],
+        )?;
+        delete_rule_all(
+            "nat",
+            "OUTPUT",
+            &[
+                "-p",
+                protocol,
+                "-m",
+                "addrtype",
+                "--dst-type",
+                "LOCAL",
+                "--dport",
+                &host_port,
+                "-j",
+                "DNAT",
+                "--to-destination",
+                &destination,
+            ],
+        )?;
+        delete_rule_all(
+            "nat",
+            "POSTROUTING",
+            &[
+                "-p",
+                protocol,
+                "-s",
+                "127.0.0.0/8",
+                "-d",
+                &network.guest_address,
+                "--dport",
+                &guest_port,
+                "-j",
+                "SNAT",
+                "--to-source",
+                &network.gateway_address,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn delete_rule_all(table: &str, chain: &str, rule: &[&str]) -> Result<()> {
+    let mut check = vec!["-C".to_owned(), chain.to_owned()];
+    check.extend(rule.iter().map(|value| (*value).to_owned()));
+    while iptables_success_owned(table, &check)? {
+        let mut delete = vec!["-D".to_owned(), chain.to_owned()];
+        delete.extend(rule.iter().map(|value| (*value).to_owned()));
+        iptables_checked_owned(table, &delete)?;
+    }
+    Ok(())
+}
+
+fn check_published_port_collisions(network: &NetworkRecord) -> Result<()> {
+    if network.published_ports.is_empty() {
+        return Ok(());
+    }
+    let output = Command::new("iptables-save")
+        .args(["-t", "nat"])
+        .output()
+        .context("inspect host NAT rules")?;
     if !output.status.success() {
         bail!(
-            "nftables setup failed: {}",
+            "iptables-save -t nat failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
+    let text = String::from_utf8_lossy(&output.stdout);
+    for port in &network.published_ports {
+        let protocol = checked_protocol(&port.protocol)?;
+        let host_port = port.host_port.to_string();
+        for line in text.lines() {
+            let tokens = line.split_whitespace().collect::<Vec<_>>();
+            if has_pair(&tokens, "-j", "DNAT")
+                && has_pair(&tokens, "-p", protocol)
+                && has_pair(&tokens, "--dport", &host_port)
+            {
+                bail!(
+                    "published {protocol} host port {} collides with an existing DNAT rule",
+                    port.host_port
+                );
+            }
+        }
+    }
     Ok(())
+}
+
+fn validate_published_ports(network: &NetworkRecord) -> Result<()> {
+    let mut seen = BTreeSet::new();
+    for port in &network.published_ports {
+        let protocol = checked_protocol(&port.protocol)?;
+        if port.host_port == 0 || port.guest_port == 0 {
+            bail!("published ports must be between 1 and 65535");
+        }
+        if !seen.insert((protocol.to_owned(), port.host_port)) {
+            bail!(
+                "duplicate published {protocol} host port {} in machine definition",
+                port.host_port
+            );
+        }
+    }
+    Ok(())
+}
+
+fn has_pair(tokens: &[&str], key: &str, value: &str) -> bool {
+    tokens
+        .windows(2)
+        .any(|window| window[0] == key && window[1] == value)
+}
+
+fn checked_protocol(protocol: &str) -> Result<&str> {
+    match protocol {
+        "tcp" | "udp" => Ok(protocol),
+        other => bail!("unsupported port protocol {other}"),
+    }
+}
+
+fn chain_suffix(name: &str) -> String {
+    sha256_bytes(name.as_bytes())[..10].to_owned()
+}
+
+fn subnet_cidr(network: &NetworkRecord) -> String {
+    format!("{}/{}", subnet(network), network.prefix_length)
+}
+
+fn subnet(network: &NetworkRecord) -> String {
+    let mut octets = network.gateway_address.split('.');
+    let a = octets.next().unwrap_or("0");
+    let b = octets.next().unwrap_or("0");
+    let c = octets.next().unwrap_or("0");
+    format!("{a}.{b}.{c}.0")
+}
+
+fn legacy_table_name(name: &str) -> String {
+    let digest = sha256_bytes(name.as_bytes());
+    format!("smp_{}", &digest[..12])
 }
 
 fn default_route_interface() -> Result<String> {
@@ -180,29 +591,58 @@ fn default_route_interface() -> Result<String> {
     if !output.status.success() {
         bail!(
             "cannot inspect default route: {}",
-            String::from_utf8_lossy(&output.stderr)
+            String::from_utf8_lossy(&output.stderr).trim()
         );
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    let fields: Vec<&str> = text.split_whitespace().collect();
-    fields
+    text.split_whitespace()
+        .collect::<Vec<_>>()
         .windows(2)
         .find(|window| window[0] == "dev")
         .map(|window| window[1].to_owned())
         .ok_or_else(|| anyhow::anyhow!("default route has no device"))
 }
 
-fn table_name(name: &str) -> String {
-    let digest = sha256_bytes(name.as_bytes());
-    format!("smp_{}", &digest[..12])
+fn iptables_success(table: &str, args: &[&str]) -> Result<bool> {
+    let owned = args
+        .iter()
+        .map(|value| (*value).to_owned())
+        .collect::<Vec<_>>();
+    iptables_success_owned(table, &owned)
 }
 
-fn subnet(network: &NetworkRecord) -> String {
-    let mut octets = network.gateway_address.split('.');
-    let a = octets.next().unwrap_or("0");
-    let b = octets.next().unwrap_or("0");
-    let c = octets.next().unwrap_or("0");
-    format!("{a}.{b}.{c}.0")
+fn iptables_success_owned(table: &str, args: &[String]) -> Result<bool> {
+    Ok(run_iptables(table, args)?.status.success())
+}
+
+fn iptables_checked(table: &str, args: &[&str]) -> Result<()> {
+    let owned = args
+        .iter()
+        .map(|value| (*value).to_owned())
+        .collect::<Vec<_>>();
+    iptables_checked_owned(table, &owned)
+}
+
+fn iptables_checked_owned(table: &str, args: &[String]) -> Result<()> {
+    let output = run_iptables(table, args)?;
+    if !output.status.success() {
+        bail!(
+            "iptables {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+fn run_iptables(table: &str, args: &[String]) -> Result<Output> {
+    let mut command = Command::new("iptables");
+    command.args(["-w", IPTABLES_WAIT_SECONDS]);
+    if table != "filter" {
+        command.args(["-t", table]);
+    }
+    command.args(args);
+    command.output().context("run iptables")
 }
 
 fn run_checked(program: &str, args: &[&str]) -> Result<()> {
@@ -240,9 +680,89 @@ mod tests {
     }
 
     #[test]
-    fn subnet_preserves_third_octet_ending_in_one() {
-        let mut network = default_network("default", vec![]);
-        network.gateway_address = "172.31.11.1".to_owned();
-        assert_eq!(subnet(&network), "172.31.11.0");
+    fn per_machine_plans_are_deterministic_and_isolated() {
+        let first = chain_plans("first", &default_network("first", vec![]), "eth0").unwrap();
+        let replay = chain_plans("first", &default_network("first", vec![]), "eth0").unwrap();
+        let second = chain_plans("second", &default_network("second", vec![]), "eth0").unwrap();
+        assert_eq!(first, replay);
+        assert_ne!(first[0].owned, second[0].owned);
+        assert_ne!(
+            default_network("first", vec![]).guest_address,
+            default_network("second", vec![]).guest_address
+        );
+        assert!(first.iter().all(|plan| plan.owned.len() <= 28));
+    }
+
+    #[test]
+    fn plans_cover_required_hooks() {
+        let hooks = chain_bindings("machine")
+            .into_iter()
+            .map(|plan| (plan.table, plan.builtin))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            hooks,
+            vec![
+                ("filter", "INPUT"),
+                ("filter", "OUTPUT"),
+                ("filter", "FORWARD"),
+                ("nat", "PREROUTING"),
+                ("nat", "OUTPUT"),
+                ("nat", "POSTROUTING"),
+            ]
+        );
+    }
+
+    #[test]
+    fn published_plan_has_external_localhost_and_hairpin_rules() {
+        let network = default_network(
+            "published",
+            vec![PublishedPort {
+                protocol: "tcp".to_owned(),
+                host_port: 18080,
+                guest_port: 8080,
+            }],
+        );
+        let rendered = chain_plans("published", &network, "eth0")
+            .unwrap()
+            .iter()
+            .flat_map(|plan| plan.rules.iter())
+            .map(|rule| rule.join(" "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("--dport 18080"));
+        assert!(rendered.contains("--dst-type LOCAL"));
+        assert!(rendered.contains("--to-destination"));
+        assert!(rendered.contains("127.0.0.0/8"));
+        assert!(rendered.contains("--to-source"));
+    }
+
+    #[test]
+    fn duplicate_host_ports_and_unsupported_protocols_are_rejected() {
+        let duplicate = default_network(
+            "duplicate",
+            vec![
+                PublishedPort {
+                    protocol: "tcp".to_owned(),
+                    host_port: 18080,
+                    guest_port: 8080,
+                },
+                PublishedPort {
+                    protocol: "tcp".to_owned(),
+                    host_port: 18080,
+                    guest_port: 8081,
+                },
+            ],
+        );
+        assert!(chain_plans("duplicate", &duplicate, "eth0").is_err());
+
+        let unsupported = default_network(
+            "unsupported",
+            vec![PublishedPort {
+                protocol: "sctp".to_owned(),
+                host_port: 18080,
+                guest_port: 8080,
+            }],
+        );
+        assert!(chain_plans("unsupported", &unsupported, "eth0").is_err());
     }
 }
