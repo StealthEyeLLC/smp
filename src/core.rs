@@ -54,7 +54,7 @@ impl Default for CreateOptions {
 
 fn default_boot_args(root_uuid: &str) -> String {
     format!(
-        "root=UUID={root_uuid} rw console=ttyS0 reboot=k panic=1 pci=on systemd.unified_cgroup_hierarchy=1"
+        "root=UUID={root_uuid} rw console=ttyS0 reboot=k panic=1 pci=on net.ifnames=0 systemd.unified_cgroup_hierarchy=1"
     )
 }
 
@@ -508,9 +508,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_pci_boot_args_do_not_disable_apic() {
+    fn default_pci_boot_args_keep_interrupts_and_stable_network_name() {
         let args = default_boot_args("test");
         assert!(!args.split_whitespace().any(|value| value == "noapic"));
         assert!(args.split_whitespace().any(|value| value == "pci=on"));
+        assert!(args.split_whitespace().any(|value| value == "net.ifnames=0"));
     }
 }
