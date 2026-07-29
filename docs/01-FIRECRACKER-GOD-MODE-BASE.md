@@ -21,7 +21,7 @@ The first certified implementation lane is:
 - host and guest architecture: `x86_64`;
 - host: Linux with working hardware virtualization and usable KVM access;
 - VMM: official Firecracker `v1.15.1` release binary;
-- guest userspace: Debian stable;
+- guest userspace: Debian `13.6` (`trixie`), with exact package provenance;
 - guest kernel line: Linux `6.1`, built in a Firecracker-compatible boot format;
 - default VirtIO transport: PCI;
 - default local control: the `smp` CLI;
@@ -29,9 +29,15 @@ The first certified implementation lane is:
 
 The implementation must pin the exact Firecracker release asset and record its SHA-256 digest. It must never download an unversioned `latest` binary during ordinary machine creation.
 
-An upgrade to another Firecracker version is an explicit compatibility change. The old pinned version must remain identifiable from machine state so an existing machine or snapshot is never silently opened under an incompatible VMM.
+The initial Debian image build must pin the `trixie` suite rather than the moving `stable` alias. It must record the build timestamp, repository `InRelease` identities, installed package names and versions, and final root-filesystem digest. Rebuilding from newer repository contents is an explicit image update, not the same canonical image.
+
+An upgrade to another Firecracker, Debian image, or kernel version is an explicit compatibility change. The old identities must remain in machine state so an existing machine or snapshot is never silently opened under an unknown baseline.
 
 Firecracker requires host and guest to use the same CPU architecture. Cross-architecture emulation is not part of the product.
+
+PCI in this specification means Firecracker's VirtIO PCI transport. It does not promise VFIO, GPU passthrough, arbitrary host PCI devices, USB passthrough, or a general-purpose PC hardware model.
+
+Nested KVM inside the guest is not part of the first product contract unless explicitly added and proven later.
 
 ## 3. Smallest complete architecture
 
@@ -108,9 +114,9 @@ Local interactive commands may re-execute through `sudo` when host privileges ar
 
 ## 6. Canonical guest
 
-The guest uses Debian stable with systemd, glibc, apt, OpenSSH, nftables, and ordinary Linux administration tools.
+The guest uses Debian 13.6 `trixie` with systemd, glibc, apt, OpenSSH, nftables, and ordinary Linux administration tools.
 
-The canonical kernel is not assumed to be a distribution's compressed `/boot/vmlinuz` file. For `x86_64`, Firecracker requires an uncompressed ELF kernel image. SMP must build or acquire a Firecracker-compatible Linux 6.1 `vmlinux`, install its matching modules into the root filesystem, and record the exact kernel identity and configuration digest.
+The canonical kernel is not assumed to be a distribution's compressed `/boot/vmlinuz` file. For `x86_64`, Firecracker requires an uncompressed ELF kernel image. SMP must build or acquire a Firecracker-compatible Linux 6.1 `vmlinux`, install its matching modules into the root filesystem, and record the exact kernel source identity, configuration digest, image digest, and module-tree identity.
 
 The default boot path should not require an initramfs when the required boot-critical drivers and ext4 support are built into the kernel. Operator-supplied initrd/initramfs remains supported through the raw path.
 
@@ -137,7 +143,9 @@ The root filesystem is a writable sparse ext4 image with a useful logical size. 
 
 Machine creation uses a reflink clone when the host filesystem supports it and a correct sparse-copy fallback otherwise. A fallback may be slower but must not weaken guest behavior.
 
-The machine definition records the exact backing path, logical size, writable status, and base-image identity for every disk.
+The machine definition records the exact backing path, logical size, filesystem identity, writable status, and base-image identity for every disk.
+
+The canonical root is selected by filesystem UUID or another stable identity rather than relying on incidental device enumeration. The seed filesystem uses a fixed label such as `SMP_SEED` and is mounted read-only by that identity.
 
 SMP must support:
 
@@ -163,15 +171,16 @@ Machine-specific initialization uses a tiny read-only ext4 seed disk and a one-s
 
 The one-shot service:
 
-1. validates the seed structure;
-2. creates a unique machine ID when required;
-3. generates unique guest SSH host keys;
-4. installs root authorized keys;
-5. configures networking and DNS;
-6. applies optional files;
-7. runs the optional root script exactly once;
-8. records local completion or failure state;
-9. exits permanently.
+1. finds and mounts the seed by its stable filesystem label;
+2. validates the seed structure;
+3. creates a unique machine ID when required;
+4. generates unique guest SSH host keys;
+5. installs root authorized keys;
+6. configures networking and DNS;
+7. applies optional files;
+8. runs the optional root script exactly once;
+9. records local completion or failure state;
+10. exits permanently.
 
 No private SSH key may be embedded in the base image or seed disk.
 
@@ -205,6 +214,8 @@ sudo smp up
 ```
 
 With no name, it uses the machine name `default`. The command prepares or reuses pinned shared assets, creates or reuses the machine, starts it, waits for successful guest initialization and direct root SSH, and opens the root shell.
+
+Machine identifiers must be validated canonical names and must map to exactly one machine directory. User input must not create path traversal or alias two names onto the same unintended state.
 
 The canonical CLI includes at least:
 
@@ -293,7 +304,9 @@ It must provide direct access to:
 - block-device rescan;
 - supported native features such as vsock, MMDS, entropy devices, rate limiters, snapshots, PMEM, memory controls, and CPU templates when present in the pinned release.
 
-Full snapshots are stable native functionality in the pinned baseline and may receive first-class commands after the base lifecycle passes. Differential snapshots and PCI device hotplug remain outside the canonical completion claim while upstream marks them developer preview.
+Full snapshots are stable native functionality in the pinned baseline and may receive first-class commands after the base lifecycle passes. Differential snapshots and PCI device hotplug remain outside the canonical completion claim while upstream marks them developer preview. MMDS remains an optional native feature rather than a dependency of SMP initialization.
+
+A Firecracker snapshot is not a complete machine image. Guest memory and VMM/device state are separate from block-device files. Snapshot restore must bind the compatible Firecracker snapshot-data version, CPU model or template, host-kernel assumptions, disks, TAP devices, and vsock path. SMP must not claim that existing network or vsock connections survive restore.
 
 Features not yet wrapped by a first-class SMP command remain reachable through the raw API or complete raw configuration path.
 
@@ -342,8 +355,9 @@ The first operation implemented by `smp.go` is `describe`.
 - supported operation names;
 - operation argument schemas;
 - Firecracker version and digest;
+- Debian image and kernel identities;
 - host architecture and certified status;
-- limits for inline input, output, and timeouts;
+- limits for inline input, inline output, captured output, result retention, and timeouts;
 - current machine names and summary state when requested.
 
 The published MCP tool schema remains stable and broad. New SMP capabilities appear through the runtime `describe` catalog rather than by publishing additional tools.
@@ -373,11 +387,16 @@ All command-bearing operations use exact argument arrays. A raw shell command st
 
 ### 13.4 Retry identity
 
-`requestId` provides minimal network retry correctness:
+`requestId` provides minimal network retry correctness. SMP calculates a deterministic digest of the normalized request.
 
-- the same `requestId` with the same normalized request returns the existing result or operation handle;
-- the same `requestId` with a different request fails with a conflict;
-- SMP must not create duplicate machines or duplicate long-running operations because ChatGPT retried a timed-out call.
+- the same `requestId` with the same request digest returns the existing result or operation handle;
+- the same `requestId` with a different request digest fails with a conflict;
+- SMP must not create duplicate machines or duplicate long-running operations because ChatGPT retried a timed-out call;
+- request records survive `smp serve` restart;
+- a request record is never expired while its operation is active;
+- terminal request records remain available for at least the retention interval advertised by `describe`.
+
+The record contains the request ID, request digest, redacted operation summary, process identity where applicable, result state, and output paths. It need not retain raw credentials or complete sensitive stdin after execution.
 
 This is a small request record, not a generalized transaction or receipt system.
 
@@ -402,13 +421,15 @@ The response preserves exact truth:
 }
 ```
 
-Transport success must not be represented as operation success. Guest command failure, SMP failure, timeout, cancellation, and transport loss remain distinguishable.
+Transport success must not be represented as operation success. Guest command failure, SMP failure, timeout, cancellation, transport loss, and output-capture exhaustion remain distinguishable.
 
 ### 13.6 Long output and disconnected operations
 
-Inline output is bounded so one command cannot overflow the ChatGPT tool channel. Bounded output must not mean lost output.
+Inline output is bounded so one command cannot overflow the ChatGPT tool channel. Bounded inline output must not mean silently lost finite output.
 
-When output exceeds the inline limit, SMP stores the complete stdout and stderr as plain bounded-lifetime files and returns a `resultHandle`. The same `smp.go` tool supports `result.get` and `result.read` operations for status and chunked continuation.
+When output exceeds the inline limit, SMP stores stdout and stderr in plain bounded-lifetime files and returns a `resultHandle`. The same `smp.go` tool supports `result.get` and `result.read` operations for status and chunked continuation.
+
+Captured output has an explicit configurable maximum advertised by `describe`. Reaching that maximum must be reported exactly. The operator may raise the limit or direct output into a guest file when complete arbitrarily large output is required.
 
 Long operations may run in detached mode and return a result handle. The same tool supports status, wait, read, and cancel operations.
 
@@ -423,6 +444,8 @@ This mechanism must remain smaller than a job system:
 - no generalized workflow model.
 
 A detached operation is one directly spawned process plus a small state file, verified by PID start time and output files. It exists only to survive an MCP call timeout or client disconnect without duplicating work.
+
+After `smp serve` restarts, it must adopt a still-running detached operation from its verified process identity and state file or classify it honestly as terminal, failed, or stale. It must not start a duplicate operation merely because the serving process restarted.
 
 ### 13.7 File transfer
 
@@ -442,6 +465,7 @@ These raw paths expose the full SMP and Firecracker control surfaces. They do no
 
 SMP must use:
 
+- validated canonical machine identifiers;
 - per-machine locking;
 - exact Firecracker process identity;
 - atomic machine-state replacement;
@@ -463,6 +487,7 @@ No generalized receipts, signed evidence, append-only event chain, durable jobs,
 The base is complete only when a real certified KVM host proves that:
 
 - the pinned official Firecracker binary and digest are used;
+- the pinned Debian 13.6 image provenance and final digest are recorded;
 - the Firecracker-compatible kernel boots through PCI VirtIO by default;
 - default Firecracker seccomp remains enabled;
 - the canonical guest provides unrestricted root inside its declared boundary;
@@ -472,5 +497,5 @@ The base is complete only when a real certified KVM host proves that:
 - raw configuration and API access preserve native power;
 - `sudo smp up` provides the zero-friction local path;
 - one ChatGPT MCP integration exposes only `smp.go` and reaches the complete SMP surface;
-- retries, disconnections, long output, and long operations do not create duplicate work or false success;
+- retries, serving-process restarts, disconnections, long output, and long operations do not create duplicate work or false success;
 - no private StealthEye implementation was imported without explicit authorization.
