@@ -24,6 +24,7 @@ for shell_file in "${shell_files[@]}"; do
   bash -n "$shell_file"
 done
 shellcheck -x "${shell_files[@]}"
+bash scripts/test-guest-firstboot.sh
 
 mapfile -d '' json_files < <(find config plugin -type f -name '*.json' -print0 | sort -z)
 ((${#json_files[@]} > 0))

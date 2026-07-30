@@ -17,8 +17,9 @@ fail() {
 }
 trap fail ERR
 
+already_initialized=0
 if [[ -f "$SUCCESS_FILE" ]]; then
-  exit 0
+  already_initialized=1
 fi
 
 seed_device="$(findfs LABEL=SMP_SEED)"
@@ -33,18 +34,20 @@ for required in manifest.json hostname network.json authorized_keys; do
 done
 jq -e '.schemaVersion == 1' "$SEED_MOUNT/manifest.json" >/dev/null
 
-rm -f /etc/machine-id /var/lib/dbus/machine-id
-systemd-machine-id-setup
-ln -sf /etc/machine-id /var/lib/dbus/machine-id
-rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub
-ssh-keygen -A
+if [[ "$already_initialized" -eq 0 ]]; then
+  rm -f /etc/machine-id /var/lib/dbus/machine-id
+  systemd-machine-id-setup
+  ln -sf /etc/machine-id /var/lib/dbus/machine-id
+  rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub
+  ssh-keygen -A
 
-install -d -m 0700 /root/.ssh
-install -m 0600 "$SEED_MOUNT/authorized_keys" /root/.ssh/authorized_keys
-hostname="$(tr -d '\r\n' <"$SEED_MOUNT/hostname")"
-[[ "$hostname" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,62}$ ]]
-printf '%s\n' "$hostname" >/etc/hostname
-hostnamectl --static set-hostname "$hostname"
+  install -d -m 0700 /root/.ssh
+  install -m 0600 "$SEED_MOUNT/authorized_keys" /root/.ssh/authorized_keys
+  hostname="$(tr -d '\r\n' <"$SEED_MOUNT/hostname")"
+  [[ "$hostname" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,62}$ ]]
+  printf '%s\n' "$hostname" >/etc/hostname
+  hostnamectl --static set-hostname "$hostname"
+fi
 
 mac="$(jq -er '.mac' "$SEED_MOUNT/network.json" | tr '[:upper:]' '[:lower:]')"
 address="$(jq -er '.address' "$SEED_MOUNT/network.json")"
@@ -84,6 +87,11 @@ ip route replace default via "$gateway" dev "$interface"
   printf 'options timeout:2 attempts:3\n'
 } >/etc/resolv.conf
 
+if [[ "$already_initialized" -eq 1 ]]; then
+  rm -f "$FAILURE_FILE"
+  exit 0
+fi
+
 if [[ -f "$SEED_MOUNT/files.json" ]]; then
   jq -e 'type == "array"' "$SEED_MOUNT/files.json" >/dev/null
   while IFS=$'\t' read -r source destination mode; do
@@ -99,6 +107,7 @@ if [[ -f "$SEED_MOUNT/init.sh" ]]; then
   /bin/bash "$STATE_DIR/init.sh"
 fi
 
+hostname="$(cat /etc/hostname)"
 printf '{"schemaVersion":1,"status":"ready","machineId":"%s","hostname":"%s","interface":"%s"}\n' \
   "$(cat /etc/machine-id)" "$hostname" "$interface" >"$SUCCESS_FILE.tmp"
 chmod 0600 "$SUCCESS_FILE.tmp"
