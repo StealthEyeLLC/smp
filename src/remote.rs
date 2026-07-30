@@ -479,6 +479,13 @@ impl Engine {
         let _lock = self.request_lock(&target)?;
         let path = self.paths.request_record(&target)?;
         let mut record: RequestRecord = read_json(&path)?;
+        if !matches!(record.state, ResultState::Accepted | ResultState::Running) {
+            return record.response.clone().ok_or_else(|| {
+                SmpError::Conflict(format!(
+                    "terminal request {target} is missing its durable response"
+                ))
+            });
+        }
         let identity = record
             .process
             .as_ref()
@@ -869,6 +876,46 @@ mod tests {
         let response = running_response("active");
         assert_eq!(response.state, ResultState::Running);
         assert!(response.result_handle.is_some());
+    }
+
+    #[test]
+    fn repeated_cancellation_returns_durable_terminal_truth() -> Result<()> {
+        let directory = tempfile::tempdir().map_err(|error| SmpError::io("tempdir", error))?;
+        let engine = Engine::new(Paths::rooted(directory.path())?);
+        engine.paths.ensure_layout()?;
+        let request_id = "cancelled-replay";
+        let response = failed_response(request_id, &SmpError::State("cancelled".to_owned()));
+        let response = RemoteResponse {
+            state: ResultState::Cancelled,
+            error: None,
+            ..response
+        };
+        let normalized_request = request(request_id);
+        let record = RequestRecord {
+            schema_version: REQUEST_SCHEMA_VERSION,
+            request_id: request_id.to_owned(),
+            request_digest: canonical_json_digest(&normalized_request)?,
+            normalized_request,
+            operation: "describe".to_owned(),
+            state: ResultState::Cancelled,
+            process: None,
+            result_directory: None,
+            response: Some(response),
+            created_at: 1,
+            updated_at: 2,
+        };
+        atomic_json(&engine.paths.request_record(request_id)?, &record, 0o600)?;
+
+        let mut replay_request = request("cancel-call");
+        replay_request.operation = "result.cancel".to_owned();
+        replay_request
+            .options
+            .insert("requestId".to_owned(), Value::String(request_id.to_owned()));
+        let replay = engine.result_cancel(&replay_request)?;
+        assert_eq!(replay.request_id, request_id);
+        assert_eq!(replay.state, ResultState::Cancelled);
+        assert!(replay.error.is_none());
+        Ok(())
     }
 
     #[test]
