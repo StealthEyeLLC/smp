@@ -258,6 +258,73 @@ EOF
   chroot "$root" passwd -d root
 }
 
+verify_merged_usr_rootfs() {
+  local root="$1"
+  local link
+  local expected
+  for link in bin sbin lib lib64; do
+    case "$link" in
+      bin) expected=usr/bin ;;
+      sbin) expected=usr/sbin ;;
+      lib) expected=usr/lib ;;
+      lib64) expected=usr/lib64 ;;
+    esac
+    [[ -L "$root/$link" ]]
+    [[ "$(readlink -- "$root/$link")" == "$expected" ]]
+  done
+  cat >"$root/tmp/smp-rootfs-compiler.c" <<'EOF'
+int main(void) {
+  return 0;
+}
+EOF
+  chroot "$root" gcc /tmp/smp-rootfs-compiler.c -o /tmp/smp-rootfs-compiler
+  chroot "$root" /tmp/smp-rootfs-compiler
+  rm -f -- "$root/tmp/smp-rootfs-compiler.c" "$root/tmp/smp-rootfs-compiler"
+}
+
+verify_final_rootfs_image() {
+  local image="$1"
+  local expected_uuid="$2"
+  local mount_root="$BUILD/rootfs-image-mount"
+  local validation_rc=0
+
+  if mountpoint -q "$mount_root" 2>/dev/null; then
+    printf 'refusing active rootfs validation mount: %s\n' "$mount_root" >&2
+    return 1
+  fi
+  safe_remove "$mount_root"
+  install -d -m 0700 "$mount_root"
+  (
+    set -euo pipefail
+    mount -o loop,rw -- "$image" "$mount_root"
+    trap 'umount "$mount_root" 2>/dev/null || true' EXIT
+
+    verify_merged_usr_rootfs "$mount_root"
+    [[ -e "$mount_root/lib/x86_64-linux-gnu/libc.so.6" ]]
+    [[ -e "$mount_root/lib64/ld-linux-x86-64.so.2" ]]
+    grep -qx "$DEBIAN_VERSION" "$mount_root/etc/debian_version"
+
+    cat >"$mount_root/tmp/smp-final-rootfs.c" <<'EOF'
+int main(void) {
+  return 0;
+}
+EOF
+    chroot "$mount_root" /usr/bin/gcc /tmp/smp-final-rootfs.c -o /tmp/smp-final-rootfs
+    chroot "$mount_root" /usr/bin/readelf -l /tmp/smp-final-rootfs       | grep -Fq '/lib64/ld-linux-x86-64.so.2'
+    chroot "$mount_root" /tmp/smp-final-rootfs
+    rm -f -- "$mount_root/tmp/smp-final-rootfs.c" "$mount_root/tmp/smp-final-rootfs"
+    sync -f "$mount_root"
+
+    umount "$mount_root"
+    trap - EXIT
+  ) || validation_rc=$?
+  rmdir -- "$mount_root" 2>/dev/null || true
+  (( validation_rc == 0 )) || return "$validation_rc"
+
+  e2fsck -fn "$image"
+  [[ "$(tune2fs -l "$image" 2>/dev/null | awk -F: '/^Filesystem UUID:/ {gsub(/^[[:space:]]+/, "", $2); print $2; exit}')" == "$expected_uuid" ]]
+}
+
 prepare_debian_keyring() {
   local package="$CACHE/$DEBIAN_KEYRING_PACKAGE"
   local extracted="$BUILD/debian-archive-keyring"
@@ -294,6 +361,7 @@ build_rootfs() {
   debootstrap \
     --arch="$DEBIAN_ARCH" \
     --variant=minbase \
+    --merged-usr \
     --keyring="$keyring" \
     "$DEBIAN_SUITE" "$root" "$DEBIAN_REPOSITORY"
   cat >"$root/etc/apt/sources.list" <<EOF
@@ -316,11 +384,14 @@ EOF
     systemd systemd-sysv dbus openssh-server nftables iproute2 dnsutils ca-certificates curl \
     e2fsprogs util-linux procps bash coreutils findutils grep sed gawk tar gzip xz-utils \
     iputils-ping kmod jq gcc libc6-dev make pkg-config
+  verify_merged_usr_rootfs "$root"
   chroot "$root" apt-get clean
   find "$root/var/lib/apt/lists" -mindepth 1 -delete
   install -d -m 0755 "$root/var/lib/apt/lists"
-  tar --extract --xz --file "$OUTPUT/kernel-modules.tar.xz" --directory "$root"
+  tar --keep-directory-symlink --extract --xz     --file "$OUTPUT/kernel-modules.tar.xz" --directory "$root"
+  verify_merged_usr_rootfs "$root"
   configure_rootfs "$root"
+  verify_merged_usr_rootfs "$root"
   local package_list="$PROVENANCE/debian-packages.txt"
   local dpkg_format="\${Package}\t\${Version}\n"
   local version_format="\${Version}"
@@ -341,7 +412,7 @@ EOF
   rm -f -- "$rootfs"
   truncate --size 4G "$rootfs"
   mkfs.ext4 -F -L SMP_ROOT -U "$ROOTFS_UUID" -d "$root" "$rootfs"
-  e2fsck -fn "$rootfs"
+  verify_final_rootfs_image "$rootfs" "$ROOTFS_UUID"
 
   local seed_root="$BUILD/seed-template-directory"
   safe_remove "$seed_root"
