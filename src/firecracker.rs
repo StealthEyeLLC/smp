@@ -203,10 +203,7 @@ fn validate_api_request(
     path: &str,
     headers: &BTreeMap<String, String>,
 ) -> Result<()> {
-    if !matches!(method, "GET" | "PUT" | "PATCH" | "DELETE")
-        || !path.starts_with('/')
-        || !path.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
-    {
+    if !matches!(method, "GET" | "PUT" | "PATCH" | "DELETE") || !valid_api_path(path) {
         return Err(SmpError::Invalid(
             "invalid Firecracker API method or path".to_owned(),
         ));
@@ -227,6 +224,23 @@ fn validate_api_request(
         }
     }
     Ok(())
+}
+
+fn valid_api_path(path: &str) -> bool {
+    if !path.starts_with('/')
+        || !path.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+        || path
+            .bytes()
+            .any(|byte| matches!(byte, b'%' | b'\\' | b'?' | b'#'))
+    {
+        return false;
+    }
+    if path == "/" {
+        return true;
+    }
+    path[1..]
+        .split('/')
+        .all(|segment| !segment.is_empty() && !matches!(segment, "." | ".."))
 }
 
 fn valid_header_name(name: &str) -> bool {
@@ -674,6 +688,64 @@ mod tests {
         assert!(parse_http_response(b"not-http").is_err());
         assert!(parse_http_response(b"HTTP/1.1 200 OK\r\nBroken\r\n\r\n").is_err());
         assert!(parse_http_response(b"HTTP/1.1 200 OK\r\nContent-Length: nope\r\n\r\n").is_err());
+    }
+
+    #[test]
+    fn canonical_firecracker_api_paths_are_accepted() {
+        for path in [
+            "/",
+            "/machine-config",
+            "/boot-source",
+            "/drives/root",
+            "/network-interfaces/eth0",
+            "/actions",
+            "/metrics",
+            "/snapshot/create",
+            "/snapshot/load",
+        ] {
+            assert!(valid_api_path(path), "expected canonical path: {path:?}");
+            validate_api_request("GET", path, &BTreeMap::new())
+                .expect("canonical Firecracker API path");
+        }
+    }
+
+    #[test]
+    fn noncanonical_firecracker_api_paths_are_rejected() {
+        for path in [
+            "machine-config",
+            "../machine-config",
+            "/../machine-config",
+            "/./machine-config",
+            "/foo/../machine-config",
+            "/foo/./machine-config",
+            "/..",
+            "/.",
+            "/a\\..\\b",
+            "/..\\machine-config",
+            "/%2e%2e/machine-config",
+            "/%2E%2E/machine-config",
+            "/%2e./machine-config",
+            "/.%2e/machine-config",
+            "/%5c../machine-config",
+            "/%255c../machine-config",
+            "/%252e%252e/machine-config",
+            "/machine-config?x=1",
+            "/machine-config#fragment",
+            "/machine-config\r",
+            "/machine-config\n",
+            "/machine-config\0",
+            "/machine-config\u{1f}",
+            "//machine-config",
+            "/machine-config/",
+        ] {
+            assert!(!valid_api_path(path), "expected rejection: {path:?}");
+            let error = validate_api_request("GET", path, &BTreeMap::new())
+                .expect_err("noncanonical Firecracker API path must fail locally");
+            assert!(
+                matches!(error, SmpError::Invalid(_)),
+                "path={path:?} error={error:?}"
+            );
+        }
     }
 
     #[test]
