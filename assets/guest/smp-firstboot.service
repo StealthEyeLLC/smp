@@ -2,7 +2,7 @@
 Description=SMP seed initialization
 DefaultDependencies=no
 After=local-fs.target systemd-udev-settle.service
-Before=network-pre.target ssh.service
+Before=network-pre.target systemd-networkd.service ssh.service
 Wants=systemd-udev-settle.service
 
 [Service]

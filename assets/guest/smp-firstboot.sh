@@ -33,6 +33,8 @@ for required in manifest.json hostname network.json authorized_keys; do
   [[ -f "$SEED_MOUNT/$required" ]]
 done
 jq -e '.schemaVersion == 1' "$SEED_MOUNT/manifest.json" >/dev/null
+jq -e '.schemaVersion == 1' "$SEED_MOUNT/network.json" >/dev/null
+install -m 0600 "$SEED_MOUNT/network.json" "$STATE_DIR/network.json"
 
 if [[ "$already_initialized" -eq 0 ]]; then
   rm -f /etc/machine-id /var/lib/dbus/machine-id
@@ -69,7 +71,7 @@ done
 install -d -m 0755 /etc/systemd/network
 network_file=/etc/systemd/network/10-smp.network
 {
-  printf '[Match]\nMACAddress=%s\n\n[Network]\nAddress=%s/%s\nGateway=%s\n' "$mac" "$address" "$prefix" "$gateway"
+  printf '[Match]\nMACAddress=%s\n\n[Link]\nRequiredForOnline=routable\n\n[Network]\nAddress=%s/%s\nGateway=%s\nLinkLocalAddressing=no\nIPv6AcceptRA=no\n' "$mac" "$address" "$prefix" "$gateway"
   for dns in "${dns_servers[@]}"; do
     printf 'DNS=%s\n' "$dns"
   done

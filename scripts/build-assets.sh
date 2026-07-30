@@ -239,9 +239,17 @@ build_kernel() {
 
 configure_rootfs() {
   local root="$1"
-  install -d -m 0755 "$root/usr/lib/smp-guest" "$root/etc/systemd/system" "$root/etc/ssh/sshd_config.d"
+  install -d -m 0755 \
+    "$root/usr/lib/smp-guest" \
+    "$root/etc/systemd/system" \
+    "$root/etc/systemd/system/systemd-networkd-wait-online.service.d" \
+    "$root/etc/ssh/sshd_config.d"
   install -m 0755 "$REPOSITORY_ROOT/assets/guest/smp-firstboot.sh" "$root/usr/lib/smp-guest/smp-firstboot"
+  install -m 0755 "$REPOSITORY_ROOT/assets/guest/smp-wait-online.sh" "$root/usr/lib/smp-guest/smp-wait-online"
   install -m 0644 "$REPOSITORY_ROOT/assets/guest/smp-firstboot.service" "$root/etc/systemd/system/smp-firstboot.service"
+  install -m 0644 \
+    "$REPOSITORY_ROOT/assets/guest/10-smp-wait-online.conf" \
+    "$root/etc/systemd/system/systemd-networkd-wait-online.service.d/10-smp.conf"
   install -m 0755 "$release_binary" "$root/usr/local/libexec/smp"
   cat >"$root/etc/ssh/sshd_config.d/10-smp-root.conf" <<'EOF'
 PermitRootLogin prohibit-password
