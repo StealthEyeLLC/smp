@@ -135,6 +135,7 @@ impl Manager {
         let result = (|| -> Result<MachineRecord> {
             let mut root_disk =
                 storage::clone_base(&base_rootfs, &root_path, options.mode.clone())?;
+            storage::prepare_filesystem_for_uuid_change(&root_path)?;
             command_checked(
                 "tune2fs",
                 &[

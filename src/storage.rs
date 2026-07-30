@@ -1,7 +1,8 @@
 use crate::error::{Result, SmpError};
 use crate::model::{DiskAttachment, MachineMode, MachineRecord, MachineState};
-use crate::util::{command_checked, ensure_beneath, physical_size, sha256_file};
+use crate::util::{command_checked, command_output, ensure_beneath, physical_size, sha256_file};
 use std::fs::{self, OpenOptions};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 pub fn clone_base(base: &Path, destination: &Path, _mode: MachineMode) -> Result<DiskAttachment> {
@@ -31,6 +32,8 @@ pub fn clone_base(base: &Path, destination: &Path, _mode: MachineMode) -> Result
         destination.display().to_string(),
     ];
     command_checked("cp", &args)?;
+    fs::set_permissions(destination, fs::Permissions::from_mode(0o600))
+        .map_err(|error| SmpError::io(destination.display().to_string(), error))?;
     let logical_size = fs::metadata(destination)
         .map_err(|error| SmpError::io(destination.display().to_string(), error))?
         .len();
@@ -46,6 +49,19 @@ pub fn clone_base(base: &Path, destination: &Path, _mode: MachineMode) -> Result
         is_root: true,
         active: false,
     })
+}
+
+pub fn prepare_filesystem_for_uuid_change(path: &Path) -> Result<()> {
+    let args = vec!["-p".to_owned(), "-f".to_owned(), path.display().to_string()];
+    let output = command_output("e2fsck", &args)?;
+    match output.status.code() {
+        Some(0 | 1) => Ok(()),
+        code => Err(SmpError::External {
+            program: format!("e2fsck {}", args.join(" ")),
+            code: code.unwrap_or(128),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        }),
+    }
 }
 
 pub fn ensure_base_immutable(base: &Path, expected_digest: &str) -> Result<()> {
@@ -220,6 +236,60 @@ mod tests {
             state,
             last_error: None,
         }
+    }
+
+    #[test]
+    fn readonly_base_clone_is_private_writable_and_uuid_ready() -> Result<()> {
+        let directory = tempfile::tempdir().map_err(|error| SmpError::io("tempdir", error))?;
+        let base = directory.path().join("base.ext4");
+        let clone = directory.path().join("clone.ext4");
+        command_checked(
+            "truncate",
+            &[
+                "-s".to_owned(),
+                "32M".to_owned(),
+                base.display().to_string(),
+            ],
+        )?;
+        command_checked(
+            "mkfs.ext4",
+            &["-q".to_owned(), "-F".to_owned(), base.display().to_string()],
+        )?;
+        let base_uuid = filesystem_uuid(&base)?;
+        fs::set_permissions(&base, fs::Permissions::from_mode(0o444))
+            .map_err(|error| SmpError::io(base.display().to_string(), error))?;
+
+        let attachment = clone_base(&base, &clone, MachineMode::Persistent)?;
+        assert_eq!(attachment.path, clone);
+        assert_eq!(
+            fs::metadata(&base)
+                .map_err(|error| SmpError::io("base", error))?
+                .permissions()
+                .mode()
+                & 0o777,
+            0o444
+        );
+        assert_eq!(
+            fs::metadata(&clone)
+                .map_err(|error| SmpError::io("clone", error))?
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+
+        prepare_filesystem_for_uuid_change(&clone)?;
+        command_checked(
+            "tune2fs",
+            &[
+                "-U".to_owned(),
+                "random".to_owned(),
+                clone.display().to_string(),
+            ],
+        )?;
+        assert_ne!(filesystem_uuid(&clone)?, base_uuid);
+        assert_eq!(filesystem_uuid(&base)?, base_uuid);
+        Ok(())
     }
 
     #[test]
